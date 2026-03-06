@@ -23,7 +23,7 @@ Advanced-Business-Analytics/
 ├── models/                        # Trained model artefacts (git-ignored)
 ├── src/
 │   ├── data/
-│   │   └── fetch_data.py          # Data acquisition (Energi Data Service API / CSV)
+│   │   └── fetch_consumption_data.py          # Data acquisition (Energi Data Service API / CSV)
 │   ├── features/
 │   │   └── feature_engineering.py # Feature matrix construction
 │   ├── models/
