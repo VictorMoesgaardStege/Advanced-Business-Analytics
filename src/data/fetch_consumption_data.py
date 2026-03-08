@@ -10,7 +10,12 @@ Examples:
   python fetch_consumption_data.py --start 2026-02-01 --end 2026-02-02
   python fetch_consumption_data.py --start 2026-02-01 --end 2026-02-02 --price-area DK1
   python fetch_consumption_data.py --start 2026-02-01 --end 2026-02-02 --grid-area 791 --csv out.csv
-  python src/data/fetch_consumption_data.py --start 2021-01-01 --end 2026-02-02 --price-area DK1 --csv /data/consumption_data_dk1_raw.csv
+  
+  python3 src/data/fetch_consumption_data.py \
+  --start 2021-01-01 \
+  --end 2026-02-02 \
+  --price-area DK1 \
+  --csv data/consumption_dk1_raw.csv
 """
 
 from __future__ import annotations
