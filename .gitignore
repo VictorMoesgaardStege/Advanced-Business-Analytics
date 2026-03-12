@@ -20,7 +20,7 @@ env/
 models/
 
 # Data files (can be large; users fetch their own)
-data/*.csv
+#data/*.csv
 data/*.parquet
 
 # Environment
