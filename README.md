@@ -86,6 +86,17 @@ pip install -r requirements.txt
 
 ### 2. Run the full pipeline (fetch API → train → evaluate → recommend)
 
+#import datasets from Energinet: from main folder run:
+
+```bash
+python src/data/fetch_day_ahead_price_data.py --start 2021-01-01 --end 2026-02-02 --price-area DK1 --csv data/day_ahead_prices_dk1_raw.csv
+
+python src/data/fetch_supply_forecast_data.py --start 2021-01-01 --end 2026-02-02 --price-area DK1 --csv data/supply_forecasts_dk1_raw.csv
+
+python src/data/fetch_consumption_data.py --start 2021-01-01 --end 2026-02-02 --price-area DK1 --csv data/consumption_dk1_raw.csv
+
+```
+
 ```bash
 python main.py --mode full --start 2021-01-01
 ```
