@@ -20,7 +20,7 @@ import streamlit as st
 #   - supply_forecasts_dk1_raw.csv
 #
 # Run with:
-#   streamlit run streamlit_energy_dashboard.py
+#   streamlit run dashboard.py
 # ============================================================
 
 DATA_DIR = Path("data")
@@ -55,6 +55,7 @@ def apply_page_style() -> None:
         layout="wide",
         initial_sidebar_state="expanded",
     )
+
     st.markdown(
         f"""
         <style>
@@ -62,36 +63,67 @@ def apply_page_style() -> None:
                 background-color: {COLORS['bg']};
                 color: {COLORS['text']};
             }}
+
             .block-container {{
                 padding-top: 1.2rem;
                 padding-bottom: 1.2rem;
             }}
+
             .metric-card {{
-                background: {COLORS['card']};
+                background-color: #f8fafc;
                 border-radius: 18px;
                 padding: 1rem 1.1rem;
                 box-shadow: 0 3px 14px rgba(15, 23, 42, 0.08);
                 min-height: 120px;
             }}
+
+            .header-card {{
+                background-color: #ffffff;
+                border-radius: 22px;
+                padding: 1.2rem 1.2rem;
+                box-shadow: 0 3px 14px rgba(15, 23, 42, 0.08);
+                min-height: 150px;
+                display: flex;
+                flex-direction: column;
+                justify-content: center;
+            }}
+
+            .stat-card {{
+                background-color: #dfe3e8;
+                border-radius: 22px;
+                padding: 1.45rem 1.25rem;
+                box-shadow: 0 3px 14px rgba(15, 23, 42, 0.08);
+                min-height: 190px;
+                margin-top: 0.9rem;
+                margin-bottom: 1.1rem;
+                display: flex;
+                flex-direction: column;
+                justify-content: center;
+            }}
+
             .section-card {{
-                background: {COLORS['card']};
+                background-color: {COLORS['card']};
                 border-radius: 18px;
                 padding: 1rem 1.2rem 0.7rem 1.2rem;
                 box-shadow: 0 3px 14px rgba(15, 23, 42, 0.08);
                 margin-bottom: 1rem;
             }}
+
             .small-muted {{
                 color: {COLORS['muted']};
                 font-size: 0.88rem;
             }}
+
             .recommend-good {{
                 color: {COLORS['good']};
                 font-weight: 600;
             }}
+
             .recommend-warn {{
                 color: {COLORS['warn']};
                 font-weight: 600;
             }}
+
             .recommend-neutral {{
                 color: {COLORS['neutral']};
                 font-weight: 600;
@@ -108,6 +140,7 @@ def load_prices(path: Path) -> pd.DataFrame:
         return pd.DataFrame()
 
     df = pd.read_csv(path)
+
     if "TimeDK" in df.columns:
         df["TimeDK"] = pd.to_datetime(df["TimeDK"], errors="coerce")
     elif "TimeUTC" in df.columns:
@@ -132,6 +165,7 @@ def load_consumption(path: Path) -> pd.DataFrame:
         return pd.DataFrame()
 
     df = pd.read_csv(path)
+
     if "TimeDK" in df.columns:
         df["TimeDK"] = pd.to_datetime(df["TimeDK"], errors="coerce")
     elif "Date" in df.columns:
@@ -154,6 +188,7 @@ def load_supply(path: Path) -> pd.DataFrame:
         return pd.DataFrame()
 
     df = pd.read_csv(path)
+
     if "HourDK" in df.columns:
         df["TimeDK"] = pd.to_datetime(df["HourDK"], errors="coerce")
     elif "HourUTC" in df.columns:
@@ -363,7 +398,7 @@ def make_price_line_chart(today_df: pd.DataFrame) -> go.Figure:
     )
     fig.update_layout(
         template="plotly_white",
-        height=340,
+        height=360,
         margin=dict(l=20, r=20, t=20, b=20),
         xaxis_title="Hour",
         yaxis_title="DKK/MWh",
@@ -516,10 +551,11 @@ def render_header(latest_ts: Optional[pd.Timestamp]) -> None:
     )
 
     col1, col2, col3 = st.columns([2.2, 1.2, 1.2])
+
     with col1:
         st.markdown(
             f"""
-            <div class="section-card">
+            <div class="header-card">
                 <div style="font-size: 1.15rem; font-weight: 700;">Today’s spot market overview</div>
                 <div class="small-muted" style="margin-top: 0.3rem;">
                     Focus area: {PRICE_AREA} · Refresh cadence: {REFRESH_FREQUENCY}
@@ -528,11 +564,12 @@ def render_header(latest_ts: Optional[pd.Timestamp]) -> None:
             """,
             unsafe_allow_html=True,
         )
+
     with col2:
         last_str = latest_ts.strftime("%Y-%m-%d %H:%M") if latest_ts is not None else "n/a"
         st.markdown(
             f"""
-            <div class="metric-card">
+            <div class="header-card">
                 <div class="small-muted">Latest data point</div>
                 <div style="font-size: 1.2rem; font-weight: 700; margin-top: 0.3rem;">{last_str}</div>
                 <div class="small-muted">Danish local time</div>
@@ -540,10 +577,11 @@ def render_header(latest_ts: Optional[pd.Timestamp]) -> None:
             """,
             unsafe_allow_html=True,
         )
+
     with col3:
         st.markdown(
-            f"""
-            <div class="metric-card">
+            """
+            <div class="header-card">
                 <div class="small-muted">Audience</div>
                 <div style="font-size: 1.2rem; font-weight: 700; margin-top: 0.3rem;">Private households</div>
                 <div class="small-muted">Simple guidance for flexible home loads</div>
@@ -553,7 +591,7 @@ def render_header(latest_ts: Optional[pd.Timestamp]) -> None:
         )
 
 
-def render_data_status(prices: pd.DataFrame, consumption: pd.DataFrame, supply: pd.DataFrame) -> None:
+def render_data_status(prices: pd.DataFrame, consumption: pd.DataFrame, supply: pd.DataFrame) -> tuple[int, bool]:
     with st.sidebar:
         st.header("Data status")
         st.write(f"**Prices:** {'Loaded' if not prices.empty else 'Missing'}")
@@ -562,6 +600,7 @@ def render_data_status(prices: pd.DataFrame, consumption: pd.DataFrame, supply: 
         st.caption("This first version reads the raw CSV files already present in the repository.")
         days_back = st.selectbox("History window", options=[30, 90, 180, 365], index=1)
         show_raw_preview = st.checkbox("Show raw data preview", value=False)
+
     return days_back, show_raw_preview
 
 
@@ -595,12 +634,13 @@ def render_main_dashboard() -> None:
         (c2, "Today minimum", today_min),
         (c3, "Today maximum", today_max),
     ]:
+        formatted_value = f"{value:.0f}" if pd.notna(value) else "n/a"
         c.markdown(
             f"""
-            <div class="metric-card">
+            <div class="stat-card">
                 <div class="small-muted">{title}</div>
                 <div style="font-size: 1.9rem; font-weight: 800; color: {COLORS['price']}; margin-top: 0.35rem;">
-                    {(f"{value:.0f}" if pd.notna(value) else "n/a")}
+                    {formatted_value}
                 </div>
                 <div class="small-muted">DKK/MWh</div>
             </div>
@@ -611,17 +651,26 @@ def render_main_dashboard() -> None:
     left, right = st.columns([1.05, 1.15])
 
     with left:
-        st.markdown('<div class="section-card"><h4>📅 Current day hourly spot price</h4></div>', unsafe_allow_html=True)
+        st.markdown(
+            '<div class="section-card" style="min-height:72px;"><h4>📅 Current day hourly spot price</h4></div>',
+            unsafe_allow_html=True,
+        )
         if today_prices.empty:
             st.info("No hourly prices available for the latest day in the file.")
         else:
             st.plotly_chart(make_price_line_chart(today_prices), use_container_width=True)
 
     with right:
-        st.markdown('<div class="section-card"><h4>📚 Historic daily average spot price</h4></div>', unsafe_allow_html=True)
+        st.markdown(
+            '<div class="section-card" style="min-height:72px;"><h4>📚 Historic daily average spot price</h4></div>',
+            unsafe_allow_html=True,
+        )
         st.plotly_chart(make_daily_history_chart(daily_prices, days_back=days_back), use_container_width=True)
 
-    st.markdown('<div class="section-card"><h4>🔮 Placeholder prediction: next 1–5 days average price</h4></div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="section-card"><h4>🔮 Placeholder prediction: next 1–5 days average price</h4></div>',
+        unsafe_allow_html=True,
+    )
     make_forecast_card_row(forecast_df)
 
     headline, style, body = generate_recommendation_text(forecast_df)
@@ -637,8 +686,12 @@ def render_main_dashboard() -> None:
     )
 
     reasoning_left, reasoning_right = st.columns(2)
+
     with reasoning_left:
-        st.markdown('<div class="section-card"><h4>🌤️ Why the forecast looks like this: supply outlook</h4></div>', unsafe_allow_html=True)
+        st.markdown(
+            '<div class="section-card"><h4>🌤️ Why the forecast looks like this: supply outlook</h4></div>',
+            unsafe_allow_html=True,
+        )
         if daily_supply.empty:
             st.info("No supply forecast file available yet.")
         else:
@@ -646,22 +699,33 @@ def render_main_dashboard() -> None:
             st.caption("Solar is shown in amber, onshore wind in teal, and offshore wind in blue.")
 
     with reasoning_right:
-        st.markdown('<div class="section-card"><h4>👪 Demand pressure: consumption background</h4></div>', unsafe_allow_html=True)
+        st.markdown(
+            '<div class="section-card"><h4>👪 Demand pressure: consumption background</h4></div>',
+            unsafe_allow_html=True,
+        )
         if daily_consumption.empty:
             st.info("No consumption file available yet.")
         else:
             st.plotly_chart(make_consumption_reasoning_chart(daily_consumption), use_container_width=True)
-            st.caption("This is currently a simple daily-average demand background signal used for intuition, not a full predictive feature view.")
+            st.caption(
+                "This is currently a simple daily-average demand background signal used for intuition, not a full predictive feature view."
+            )
 
     if not forecast_df.empty:
-        st.markdown('<div class="section-card"><h4>🧠 Forecast reasoning summary</h4></div>', unsafe_allow_html=True)
+        st.markdown(
+            '<div class="section-card"><h4>🧠 Forecast reasoning summary</h4></div>',
+            unsafe_allow_html=True,
+        )
         bullets = "\n".join(
             [f"- **{row.Date.strftime('%a %d %b')}**: {row.Reason}" for _, row in forecast_df.iterrows()]
         )
         st.markdown(bullets)
 
     if show_raw_preview:
-        st.markdown('<div class="section-card"><h4>🔎 Raw data preview</h4></div>', unsafe_allow_html=True)
+        st.markdown(
+            '<div class="section-card"><h4>🔎 Raw data preview</h4></div>',
+            unsafe_allow_html=True,
+        )
         tab1, tab2, tab3 = st.tabs(["Prices", "Consumption", "Supply forecasts"])
         with tab1:
             st.dataframe(prices.tail(20), use_container_width=True)
