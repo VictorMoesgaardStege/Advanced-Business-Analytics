@@ -29,7 +29,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from src.data.fetch_data import get_default_date_range, load_from_csv, load_or_fetch
+from src.data.fetch_data_NOTused import get_default_date_range, load_from_csv, load_or_fetch
 from src.evaluation.metrics import evaluate_forecaster
 from src.models.forecasting import (
     DEFAULT_HORIZONS,
