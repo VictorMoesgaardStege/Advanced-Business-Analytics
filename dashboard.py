@@ -449,7 +449,7 @@ def generate_recommendation_text(
     else:
         consumption_lines.append("- No recent consumption history available.")
 
-    prompt = f"""
+        prompt = f"""
 You are helping generate a very short recommendation for a Danish household electricity dashboard for DK1.
 
 Context:
@@ -475,12 +475,8 @@ Rules:
 - Use only the information provided above.
 - Focus on practical household action.
 - Keep the wording concise and natural.
-- Do not mention uncertainty too much.
 - Do not invent market facts not present in the input.
-- The dashboard needs exactly three outputs:
-  1. HEADLINE: a short headline
-  2. STYLE: one of only these values: recommend-good, recommend-warn, recommend-neutral
-  3. BODY: one short paragraph, maximum 2 sentences
+- The dashboard needs exactly three outputs.
 
 Return only valid JSON in this exact format:
 {{
@@ -488,15 +484,13 @@ Return only valid JSON in this exact format:
   "style": "recommend-good or recommend-warn or recommend-neutral",
   "body": "..."
 }}
+
 Do not include any extra text before or after the JSON.
 """.strip()
 
     llm_result = generate_llm_reasoning(prompt, model="llama2")
     raw_text = llm_result["raw_text"].strip()
 
-    # -----------------------------
-    # Parse LLM output safely
-    # -----------------------------
     headline = "Use smart hourly shifting"
     style = "recommend-neutral"
     body = (
@@ -515,9 +509,8 @@ Do not include any extra text before or after the JSON.
             if candidate_style in {"recommend-good", "recommend-warn", "recommend-neutral"}:
                 style = candidate_style
 
-    except Exception as e:
-        print(f"JSON parsing failed: {e}")
-        print("Raw model output was:")
+    except Exception:
+        print("Failed to parse LLM JSON output:")
         print(raw_text)
 
     return headline, style, body
