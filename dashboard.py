@@ -483,11 +483,11 @@ Rules:
   3. BODY: one short paragraph, maximum 2 sentences
 
 Return only valid JSON in this exact format:
-{
+{{
   "headline": "...",
   "style": "recommend-good or recommend-warn or recommend-neutral",
   "body": "..."
-}
+}}
 Do not include any extra text before or after the JSON.
 """.strip()
 
