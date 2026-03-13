@@ -809,7 +809,7 @@ def render_main_dashboard() -> None:
     )
     make_forecast_card_row(forecast_df)
 
-    headline, style, body = generate_recommendation_text(forecast_df)
+    headline, style, body = generate_recommendation_text(forecast_df, daily_prices, daily_supply, daily_consumption)
     st.markdown(
         f"""
         <div class="section-card">
