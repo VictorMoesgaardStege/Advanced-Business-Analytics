@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
+import json
 
 from prompting import generate_llm_reasoning
 
@@ -481,10 +482,13 @@ Rules:
   2. STYLE: one of only these values: recommend-good, recommend-warn, recommend-neutral
   3. BODY: one short paragraph, maximum 2 sentences
 
-Return in exactly this format:
-HEADLINE: ...
-STYLE: ...
-BODY: ...
+Return only valid JSON in this exact format:
+{
+  "headline": "...",
+  "style": "recommend-good or recommend-warn or recommend-neutral",
+  "body": "..."
+}
+Do not include any extra text before or after the JSON.
 """.strip()
 
     llm_result = generate_llm_reasoning(prompt, model="llama2")
@@ -501,20 +505,20 @@ BODY: ...
     )
 
     try:
-        lines = [line.strip() for line in raw_text.splitlines() if line.strip()]
+        parsed = json.loads(raw_text)
 
-        for line in lines:
-            if line.startswith("HEADLINE:"):
-                headline = line.replace("HEADLINE:", "", 1).strip()
-            elif line.startswith("STYLE:"):
-                candidate = line.replace("STYLE:", "", 1).strip()
-                if candidate in {"recommend-good", "recommend-warn", "recommend-neutral"}:
-                    style = candidate
-            elif line.startswith("BODY:"):
-                body = line.replace("BODY:", "", 1).strip()
+        if isinstance(parsed, dict):
+            headline = parsed.get("headline", headline)
+            body = parsed.get("body", body)
 
-    except Exception:
-        pass
+            candidate_style = parsed.get("style", style)
+            if candidate_style in {"recommend-good", "recommend-warn", "recommend-neutral"}:
+                style = candidate_style
+
+    except Exception as e:
+        print(f"JSON parsing failed: {e}")
+        print("Raw model output was:")
+        print(raw_text)
 
     return headline, style, body
 
