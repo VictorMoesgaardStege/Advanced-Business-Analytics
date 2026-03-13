@@ -351,22 +351,14 @@ def build_placeholder_forecast(
     return pd.DataFrame(rows)
 
 
+import json
+
 def generate_recommendation_text(
     forecast_df: pd.DataFrame,
     daily_prices: pd.DataFrame,
     daily_supply: pd.DataFrame,
     daily_consumption: pd.DataFrame,
 ) -> tuple[str, str, str]:
-    """
-    Generate a household recommendation using the local LLM.
-    Returns exactly:
-        headline, style, body
-
-    Allowed styles:
-        - recommend-good
-        - recommend-warn
-        - recommend-neutral
-    """
     if forecast_df.empty:
         return (
             "No forecast available yet.",
@@ -374,16 +366,10 @@ def generate_recommendation_text(
             "Add more data to activate the household recommendation engine.",
         )
 
-    # -----------------------------
-    # Determine the current day
-    # -----------------------------
     current_day = pd.to_datetime(forecast_df["Date"].min()) - pd.Timedelta(days=1)
     window_start = current_day - pd.Timedelta(days=5)
     window_end = current_day + pd.Timedelta(days=5)
 
-    # -----------------------------
-    # Filter data in a +/- 5 day window
-    # -----------------------------
     prices_window = pd.DataFrame()
     if not daily_prices.empty and "Date" in daily_prices.columns:
         prices_window = daily_prices[
@@ -405,9 +391,6 @@ def generate_recommendation_text(
             & (pd.to_datetime(daily_consumption["Date"]) <= window_end)
         ].copy()
 
-    # -----------------------------
-    # Build compact summaries
-    # -----------------------------
     forecast_lines = []
     for _, row in forecast_df.iterrows():
         forecast_lines.append(
@@ -449,7 +432,7 @@ def generate_recommendation_text(
     else:
         consumption_lines.append("- No recent consumption history available.")
 
-        prompt = f"""
+    prompt = f"""
 You are helping generate a very short recommendation for a Danish household electricity dashboard for DK1.
 
 Context:
@@ -476,7 +459,6 @@ Rules:
 - Focus on practical household action.
 - Keep the wording concise and natural.
 - Do not invent market facts not present in the input.
-- The dashboard needs exactly three outputs.
 
 Return only valid JSON in this exact format:
 {{
@@ -488,9 +470,6 @@ Return only valid JSON in this exact format:
 Do not include any extra text before or after the JSON.
 """.strip()
 
-    llm_result = generate_llm_reasoning(prompt, model="llama2")
-    raw_text = llm_result["raw_text"].strip()
-
     headline = "Use smart hourly shifting"
     style = "recommend-neutral"
     body = (
@@ -499,6 +478,9 @@ Do not include any extra text before or after the JSON.
     )
 
     try:
+        llm_result = generate_llm_reasoning(prompt, model="llama2")
+        raw_text = llm_result["raw_text"].strip()
+
         parsed = json.loads(raw_text)
 
         if isinstance(parsed, dict):
@@ -509,9 +491,8 @@ Do not include any extra text before or after the JSON.
             if candidate_style in {"recommend-good", "recommend-warn", "recommend-neutral"}:
                 style = candidate_style
 
-    except Exception:
-        print("Failed to parse LLM JSON output:")
-        print(raw_text)
+    except Exception as e:
+        print(f"Recommendation LLM/parsing failed: {e}")
 
     return headline, style, body
 
