@@ -1,9 +1,3 @@
-from prompting import (
-    build_weather_comparison,
-    build_price_reasoning_prompt,
-    generate_llm_reasoning,
-)
-
 from __future__ import annotations
 
 import math
@@ -14,6 +8,9 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
+
+from prompting import generate_llm_reasoning
+
 
 
 # ============================================================
