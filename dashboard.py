@@ -353,7 +353,22 @@ def build_placeholder_forecast(
     return pd.DataFrame(rows)
 
 
-def generate_recommendation_text(forecast_df: pd.DataFrame) -> tuple[str, str, str]:
+def generate_recommendation_text(
+    forecast_df: pd.DataFrame,
+    daily_prices: pd.DataFrame,
+    daily_supply: pd.DataFrame,
+    daily_consumption: pd.DataFrame,
+) -> tuple[str, str, str]:
+    """
+    Generate a household recommendation using the local LLM.
+    Returns exactly:
+        headline, style, body
+
+    Allowed styles:
+        - recommend-good
+        - recommend-warn
+        - recommend-neutral
+    """
     if forecast_df.empty:
         return (
             "No forecast available yet.",
@@ -361,30 +376,148 @@ def generate_recommendation_text(forecast_df: pd.DataFrame) -> tuple[str, str, s
             "Add more data to activate the household recommendation engine.",
         )
 
-    avg_delta = forecast_df["DeltaVsToday"].mean()
-    day1_delta = forecast_df.iloc[0]["DeltaVsToday"]
+    # -----------------------------
+    # Determine the current day
+    # -----------------------------
+    current_day = pd.to_datetime(forecast_df["Date"].min()) - pd.Timedelta(days=1)
+    window_start = current_day - pd.Timedelta(days=5)
+    window_end = current_day + pd.Timedelta(days=5)
 
-    if day1_delta > 20 or avg_delta > 15:
-        headline = "Frontload flexible electricity use"
-        style = "recommend-warn"
-        body = (
-            "Average prices are expected to increase over the next few days. Consider charging the EV tonight, "
-            "running the dishwasher and laundry sooner rather than later, and avoiding a wait-and-see strategy."
+    # -----------------------------
+    # Filter data in a +/- 5 day window
+    # -----------------------------
+    prices_window = pd.DataFrame()
+    if not daily_prices.empty and "Date" in daily_prices.columns:
+        prices_window = daily_prices[
+            (pd.to_datetime(daily_prices["Date"]) >= window_start)
+            & (pd.to_datetime(daily_prices["Date"]) <= window_end)
+        ].copy()
+
+    supply_window = pd.DataFrame()
+    if not daily_supply.empty and "Date" in daily_supply.columns:
+        supply_window = daily_supply[
+            (pd.to_datetime(daily_supply["Date"]) >= window_start)
+            & (pd.to_datetime(daily_supply["Date"]) <= window_end)
+        ].copy()
+
+    consumption_window = pd.DataFrame()
+    if not daily_consumption.empty and "Date" in daily_consumption.columns:
+        consumption_window = daily_consumption[
+            (pd.to_datetime(daily_consumption["Date"]) >= window_start)
+            & (pd.to_datetime(daily_consumption["Date"]) <= window_end)
+        ].copy()
+
+    # -----------------------------
+    # Build compact summaries
+    # -----------------------------
+    forecast_lines = []
+    for _, row in forecast_df.iterrows():
+        forecast_lines.append(
+            f"- {pd.to_datetime(row['Date']).strftime('%Y-%m-%d')}: "
+            f"{row['PredictedAvgDKK']:.1f} DKK/MWh "
+            f"(delta vs current day: {row['DeltaVsToday']:+.1f})"
         )
-    elif day1_delta < -20 or avg_delta < -15:
-        headline = "Wait before using flexible loads"
-        style = "recommend-good"
-        body = (
-            "Prices look softer ahead. Delay EV charging, tumble drying, dishwashing, and other flexible household "
-            "loads if possible, especially if you can shift them into tomorrow or the next low-price window."
-        )
+
+    price_lines = []
+    if not prices_window.empty:
+        for _, row in prices_window.tail(11).iterrows():
+            price_lines.append(
+                f"- {pd.to_datetime(row['Date']).strftime('%Y-%m-%d')}: "
+                f"average price {row['AvgPriceDKK']:.1f} DKK/MWh"
+            )
     else:
-        headline = "Use smart hourly shifting"
-        style = "recommend-neutral"
-        body = (
-            "The next few days look relatively stable on average. Focus on avoiding the most expensive evening hours "
-            "rather than shifting all consumption across days. Overnight and midday use may still offer better value."
-        )
+        price_lines.append("- No recent daily price history available.")
+
+    supply_lines = []
+    if not supply_window.empty:
+        cols = [c for c in ["Solar", "Onshore Wind", "Offshore Wind", "TotalRenewables"] if c in supply_window.columns]
+        for _, row in supply_window.tail(11).iterrows():
+            parts = [f"- {pd.to_datetime(row['Date']).strftime('%Y-%m-%d')}"]
+            for col in cols:
+                val = row.get(col)
+                if pd.notna(val):
+                    parts.append(f"{col}={val:.1f}")
+            supply_lines.append(", ".join(parts))
+    else:
+        supply_lines.append("- No recent renewable supply history available.")
+
+    consumption_lines = []
+    if not consumption_window.empty and "AvgConsumptionkWh" in consumption_window.columns:
+        for _, row in consumption_window.tail(11).iterrows():
+            consumption_lines.append(
+                f"- {pd.to_datetime(row['Date']).strftime('%Y-%m-%d')}: "
+                f"average consumption {row['AvgConsumptionkWh']:.2f} kWh"
+            )
+    else:
+        consumption_lines.append("- No recent consumption history available.")
+
+    prompt = f"""
+You are helping generate a very short recommendation for a Danish household electricity dashboard for DK1.
+
+Context:
+Current day:
+- {current_day.strftime('%Y-%m-%d')}
+
+Forecast for the next 5 days:
+{chr(10).join(forecast_lines)}
+
+Daily price history in a +/- 5 day window around the current day:
+{chr(10).join(price_lines)}
+
+Renewable supply background in a +/- 5 day window around the current day:
+{chr(10).join(supply_lines)}
+
+Consumption background in a +/- 5 day window around the current day:
+{chr(10).join(consumption_lines)}
+
+Task:
+Give a short household-oriented electricity usage recommendation for the next few days.
+
+Rules:
+- Use only the information provided above.
+- Focus on practical household action.
+- Keep the wording concise and natural.
+- Do not mention uncertainty too much.
+- Do not invent market facts not present in the input.
+- The dashboard needs exactly three outputs:
+  1. HEADLINE: a short headline
+  2. STYLE: one of only these values: recommend-good, recommend-warn, recommend-neutral
+  3. BODY: one short paragraph, maximum 2 sentences
+
+Return in exactly this format:
+HEADLINE: ...
+STYLE: ...
+BODY: ...
+""".strip()
+
+    llm_result = generate_llm_reasoning(prompt, model="llama2")
+    raw_text = llm_result["raw_text"].strip()
+
+    # -----------------------------
+    # Parse LLM output safely
+    # -----------------------------
+    headline = "Use smart hourly shifting"
+    style = "recommend-neutral"
+    body = (
+        "The next few days look relatively stable on average. Focus on avoiding the most expensive evening hours "
+        "and shifting flexible consumption where possible."
+    )
+
+    try:
+        lines = [line.strip() for line in raw_text.splitlines() if line.strip()]
+
+        for line in lines:
+            if line.startswith("HEADLINE:"):
+                headline = line.replace("HEADLINE:", "", 1).strip()
+            elif line.startswith("STYLE:"):
+                candidate = line.replace("STYLE:", "", 1).strip()
+                if candidate in {"recommend-good", "recommend-warn", "recommend-neutral"}:
+                    style = candidate
+            elif line.startswith("BODY:"):
+                body = line.replace("BODY:", "", 1).strip()
+
+    except Exception:
+        pass
 
     return headline, style, body
 
