@@ -139,7 +139,8 @@ def apply_page_style() -> None:
 
 
 #@st.cache_data(show_spinner=False)
-def load_prices(path: Path) -> pd.DataFrame:
+def load_prices(path_str: str, mtime: float) -> pd.DataFrame:
+    path = Path(path_str)
     if not path.exists():
         return pd.DataFrame()
 
@@ -161,7 +162,6 @@ def load_prices(path: Path) -> pd.DataFrame:
     df = df.dropna(subset=["TimeDK"]).sort_values("TimeDK").reset_index(drop=True)
     df["Date"] = df["TimeDK"].dt.date
     return df
-
 
 #@st.cache_data(show_spinner=False)
 def load_consumption(path: Path) -> pd.DataFrame:
@@ -635,8 +635,8 @@ def make_forecast_card_row(forecast_df: pd.DataFrame) -> None:
         )
 
 
-def make_supply_reasoning_chart(daily_supply: pd.DataFrame) -> go.Figure:
-    plot_df = daily_supply.tail(21).copy()
+def make_supply_reasoning_chart(daily_supply: pd.DataFrame, days_back: int) -> go.Figure:
+    plot_df = daily_supply.tail(days_back).copy()
     fig = go.Figure()
 
     if "Solar" in plot_df.columns:
@@ -683,8 +683,8 @@ def make_supply_reasoning_chart(daily_supply: pd.DataFrame) -> go.Figure:
     return fig
 
 
-def make_consumption_reasoning_chart(daily_consumption: pd.DataFrame) -> go.Figure:
-    plot_df = daily_consumption.tail(21).copy()
+def make_consumption_reasoning_chart(daily_consumption: pd.DataFrame, days_back: int) -> go.Figure:
+    plot_df = daily_consumption.tail(days_back).copy()
     fig = go.Figure()
     fig.add_trace(
         go.Bar(
@@ -770,8 +770,7 @@ def render_data_status(prices: pd.DataFrame, consumption: pd.DataFrame, supply: 
 
 def render_main_dashboard() -> None:
     apply_page_style()
-
-    prices = load_prices(PRICE_FILE)
+    prices = load_prices(str(PRICE_FILE), PRICE_FILE.stat().st_mtime)
     consumption = load_consumption(CONSUMPTION_FILE)
     supply = load_supply(SUPPLY_FILE)
 
@@ -879,7 +878,7 @@ def render_main_dashboard() -> None:
         if daily_supply.empty:
             st.info("No supply forecast file available yet.")
         else:
-            st.plotly_chart(make_supply_reasoning_chart(daily_supply), use_container_width=True)
+            st.plotly_chart(make_supply_reasoning_chart(daily_supply, days_back), use_container_width=True)
             st.caption("Solar is shown in amber, onshore wind in teal, and offshore wind in blue.")
 
     with reasoning_right:
@@ -890,7 +889,7 @@ def render_main_dashboard() -> None:
         if daily_consumption.empty:
             st.info("No consumption file available yet.")
         else:
-            st.plotly_chart(make_consumption_reasoning_chart(daily_consumption), use_container_width=True)
+            st.plotly_chart(make_consumption_reasoning_chart(daily_consumption, days_back), use_container_width=True)
             st.caption(
                 "This is currently a simple daily-average demand background signal used for intuition, not a full predictive feature view."
             )
