@@ -35,3 +35,5 @@ data/*.parquet
 
 # pytest cache
 .pytest_cache/
+
+.streamlit/secrets.toml
