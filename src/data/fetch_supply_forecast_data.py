@@ -1,240 +1,331 @@
-import numpy as np
-import pandas as pd
-import matplotlib.pyplot as plt
+#!/usr/bin/env python3
+"""Fetch hourly wind and solar forecasts from Energi Data Service.
+
+Dataset: Forecasts_Hour
+Docs:
+- Data API: https://api.energidataservice.dk/dataset/Forecasts_Hour
+
+Examples:
+
+    python src/data/fetch_supply_forecast_data.py \
+  --start 2021-01-01 \
+  --end 2026-02-02 \
+  --price-area DK1 \
+  --csv data/forecasts_dk1_raw.csv
+  
+
+python src/data/fetch_supply_forecast_data.py --start 2021-01-01 --end 2026-02-02 --price-area DK1 --csv data/supply_forecasts_dk1_raw.csv
+
+"""
+
+from __future__ import annotations
+
+import argparse
+import csv
+import json
+import sys
+from pathlib import Path
+from typing import Any
+from urllib.parse import urlencode
+
+import requests
+
+BASE_URL = "https://api.energidataservice.dk/dataset/Forecasts_Hour"
+
+DEFAULT_COLUMNS = [
+    "HourUTC",
+    "HourDK",
+    "PriceArea",
+    "ForecastType",
+    "ForecastDayAhead",
+    "ForecastIntraday",
+    "Forecast5Hour",
+    "Forecast1Hour",
+    "ForecastCurrent",
+    "TimestampUTC",
+    "TimestampDK",
+]
 
 
-def make_daily_prices(n_days=60, seed=42):
-    """
-    Creates synthetic daily average electricity prices [DKK/MWh].
-    Replace this with real data if you have it.
-    """
-    rng = np.random.default_rng(seed)
-    day = np.arange(n_days)
-
-    base = 650 + 80 * np.sin(2 * np.pi * day / 7) + 60 * np.sin(2 * np.pi * day / 30)
-    noise = rng.normal(0, 40, n_days)
-
-    price = base + noise
-
-    # Add some random spikes
-    spike_days = rng.choice(n_days, size=max(3, n_days // 15), replace=False)
-    price[spike_days] += rng.uniform(250, 700, len(spike_days))
-
-    return np.clip(price, 250, None)
+def build_filter(
+    price_area: list[str] | None,
+    forecast_type: list[str] | None,
+) -> dict[str, list[str]]:
+    flt: dict[str, list[str]] = {}
+    if price_area:
+        flt["PriceArea"] = price_area
+    if forecast_type:
+        flt["ForecastType"] = forecast_type
+    return flt
 
 
-def simulate_daily_shift(
-    n_days=60,
-    seed=42,
-    model="logistic",                 # "threshold", "logistic", "elasticity"
-    lookahead_days=5,                 # compare today to coming 1-5 days
-    system_daily_energy_mwh=100000,   # total system energy use per day
-    household_share_of_system=0.35,   # share of total electricity from households
-    flexible_share_of_household=0.23, # share of household load that can be moved
-    responsive_household_share=0.33,  # households that actually respond
-    max_shift_fraction_of_flexible=0.70,
-    elasticity_per_dkk_kwh=0.026,
-    shift_not_shed_share=0.80,
-    threshold_dkk_kwh=0.30,
-    full_response_dkk_kwh=1.20,
-    midpoint_dkk_kwh=0.60,
-    steepness=4.0,
-):
-    """
-    Simulation logic:
-    - today's average price is known
-    - the tool predicts average prices for the coming days
-    - if a future day is cheaper, some flexible household demand is moved from today
-      to the cheapest predicted day
-    """
-
-    rng = np.random.default_rng(seed)
-    dates = pd.date_range("2025-01-01", periods=n_days, freq="D")
-
-    # Realised daily prices
-    price_today = make_daily_prices(n_days=n_days, seed=seed)
-
-    # Forecasted daily prices (realised price + forecast error)
-    forecast_error = rng.normal(0, 55, n_days)
-    price_forecast = np.clip(price_today + forecast_error, 200, None)
-
-    # Synthetic daily total system energy demand
-    day = np.arange(n_days)
-    system_daily = (
-        system_daily_energy_mwh
-        + 6000 * np.sin(2 * np.pi * day / 7)
-        + 2500 * np.sin(2 * np.pi * day / 30)
-        + rng.normal(0, 1200, n_days)
-    )
-    system_daily = np.clip(system_daily, 0.75 * system_daily_energy_mwh, None)
-
-    household_daily = system_daily * household_share_of_system
-    other_daily = system_daily - household_daily
-    flexible_daily = household_daily * flexible_share_of_household
-
-    household_shifted = household_daily.copy()
-    shifted_out = np.zeros(n_days)
-    shifted_in = np.zeros(n_days)
-    chosen_target_day = np.full(n_days, -1)
-    best_spread_dkk_kwh = np.zeros(n_days)
-
-    def response_threshold(diff_dkk_kwh):
-        if diff_dkk_kwh <= threshold_dkk_kwh:
-            return 0.0
-        ramp = min(1.0, (diff_dkk_kwh - threshold_dkk_kwh) / (full_response_dkk_kwh - threshold_dkk_kwh))
-        return responsive_household_share * max_shift_fraction_of_flexible * ramp
-
-    def response_logistic(diff_dkk_kwh):
-        sig = 1.0 / (1.0 + np.exp(-steepness * (diff_dkk_kwh - midpoint_dkk_kwh)))
-        return responsive_household_share * max_shift_fraction_of_flexible * sig
-
-    def response_elasticity(diff_dkk_kwh):
-        reduction_share = elasticity_per_dkk_kwh * max(diff_dkk_kwh, 0.0) * shift_not_shed_share
-        technical_cap = flexible_share_of_household * max_shift_fraction_of_flexible
-        return min(reduction_share, technical_cap)
-
-    response_fn = {
-        "threshold": response_threshold,
-        "logistic": response_logistic,
-        "elasticity": response_elasticity,
-    }[model]
-
-    for t in range(n_days):
-        end = min(n_days, t + 1 + lookahead_days)
-        if t + 1 >= end:
-            continue
-
-        future_slice = slice(t + 1, end)
-
-        # Decision is based on forecast of future days
-        future_forecasts = price_forecast[future_slice]
-        rel = np.argmin(future_forecasts)
-        target = (t + 1) + rel
-
-        # Spread between today's known price and cheapest forecasted coming-day price
-        spread_dkk_kwh = (price_today[t] - price_forecast[target]) / 1000.0
-
-        best_spread_dkk_kwh[t] = spread_dkk_kwh
-        chosen_target_day[t] = target
-
-        if spread_dkk_kwh <= 0:
-            continue
-
-        shift_share = response_fn(spread_dkk_kwh)
-        shift_mwh = flexible_daily[t] * shift_share
-
-        household_shifted[t] -= shift_mwh
-        household_shifted[target] += shift_mwh
-        shifted_out[t] += shift_mwh
-        shifted_in[target] += shift_mwh
-
-    system_shifted = other_daily + household_shifted
-
-    baseline_cost = np.sum(household_daily * price_today)
-    shifted_cost = np.sum(household_shifted * price_today)
-    savings = baseline_cost - shifted_cost
-
-    summary = {
-        "model": model,
-        "days": n_days,
-        "lookahead_days": lookahead_days,
-        "avg_price_dkk_per_mwh": np.mean(price_today),
-        "shifted_energy_mwh": np.sum(shifted_out),
-        "baseline_peak_daily_mwh": np.max(system_daily),
-        "shifted_peak_daily_mwh": np.max(system_shifted),
-        "peak_reduction_daily_mwh": np.max(system_daily) - np.max(system_shifted),
-        "residential_cost_savings_dkk": savings,
-        "residential_cost_savings_pct": savings / baseline_cost if baseline_cost > 0 else 0,
+def build_params(
+    start: str,
+    end: str,
+    *,
+    price_area: list[str] | None,
+    forecast_type: list[str] | None,
+    limit: int,
+    offset: int,
+    sort: str,
+    columns: list[str],
+    timezone: str | None,
+) -> dict[str, Any]:
+    params: dict[str, Any] = {
+        "start": start,
+        "end": end,
+        "limit": limit,
+        "offset": offset,
+        "sort": sort,
+        "columns": ",".join(columns),
     }
 
-    df = pd.DataFrame({
-        "date": dates,
-        "price_today_dkk_per_mwh": price_today,
-        "forecast_price_dkk_per_mwh": price_forecast,
-        "system_daily_energy_baseline_mwh": system_daily,
-        "household_daily_energy_baseline_mwh": household_daily,
-        "household_daily_energy_shifted_mwh": household_shifted,
-        "system_daily_energy_shifted_mwh": system_shifted,
-        "flexible_daily_energy_mwh": flexible_daily,
-        "shifted_out_mwh": shifted_out,
-        "shifted_in_mwh": shifted_in,
-        "best_spread_dkk_per_kwh": best_spread_dkk_kwh,
-        "chosen_target_day_index": chosen_target_day,
-    })
+    flt = build_filter(price_area, forecast_type)
+    if flt:
+        params["filter"] = json.dumps(flt, ensure_ascii=False)
 
-    return df, summary
+    if timezone:
+        params["timezone"] = timezone
+
+    return params
 
 
-# -----------------------------
-# RUN SIMULATION
-# -----------------------------
-df, summary = simulate_daily_shift(
-    n_days=60,
-    lookahead_days=5,
-    model="logistic"
-)
+def fetch_records(
+    start: str,
+    end: str,
+    *,
+    price_area: list[str] | None = None,
+    forecast_type: list[str] | None = None,
+    page_size: int = 5000,
+    sort: str = "HourUTC desc,PriceArea,ForecastType",
+    columns: list[str] | None = None,
+    timezone: str | None = None,
+    timeout: int = 30,
+) -> list[dict[str, Any]]:
+    """Fetch all matching rows, paging with offset/limit."""
+    if columns is None:
+        columns = DEFAULT_COLUMNS
 
-print("SUMMARY")
-for k, v in summary.items():
-    if isinstance(v, float):
-        print(f"{k}: {v:,.2f}")
-    else:
-        print(f"{k}: {v}")
+    all_records: list[dict[str, Any]] = []
+    offset = 0
 
+    session = requests.Session()
+    session.headers.update(
+        {
+            "Accept": "application/json",
+            "User-Agent": "fetch_forecasts_hour.py/1.0",
+        }
+    )
 
-# -----------------------------
-# PLOTS
-# -----------------------------
-green_dark = "#1B5E20"
-green_mid = "#43A047"
-green_light = "#A5D6A7"
-green_fill = "#E8F5E9"
+    while True:
+        params = build_params(
+            start,
+            end,
+            price_area=price_area,
+            forecast_type=forecast_type,
+            limit=page_size,
+            offset=offset,
+            sort=sort,
+            columns=columns,
+            timezone=timezone,
+        )
 
-# 1. Daily price and forecast
-plt.figure(figsize=(12, 5))
-plt.plot(df["date"], df["price_today_dkk_per_mwh"], color=green_mid, linewidth=2, label="Today's known average price")
-plt.plot(df["date"], df["forecast_price_dkk_per_mwh"], color=green_light, linewidth=2, linestyle="--", label="Forecast price")
-plt.title("Daily average electricity price and forecast")
-plt.ylabel("Price [DKK/MWh]")
-plt.grid(alpha=0.25)
-plt.legend()
-plt.tight_layout()
-plt.show()
+        response = session.get(BASE_URL, params=params, timeout=timeout)
+        response.raise_for_status()
+        payload = response.json()
 
-# 2. Daily system energy before and after shifting
-plt.figure(figsize=(12, 5))
-plt.plot(df["date"], df["system_daily_energy_baseline_mwh"], color=green_light, linewidth=2, label="Baseline")
-plt.plot(df["date"], df["system_daily_energy_shifted_mwh"], color=green_dark, linewidth=2, label="After tool")
-plt.title("Daily system energy before and after shifting")
-plt.ylabel("Energy [MWh/day]")
-plt.grid(alpha=0.25)
-plt.legend()
-plt.tight_layout()
-plt.show()
+        records = payload.get("records", [])
+        if not isinstance(records, list):
+            raise RuntimeError("Unexpected API response: 'records' is not a list")
 
-# 3. Shifted energy per day
-plt.figure(figsize=(12, 5))
-plt.bar(df["date"], df["shifted_out_mwh"], color=green_mid)
-plt.title("Energy moved away from each day")
-plt.ylabel("Shifted energy [MWh]")
-plt.grid(axis="y", alpha=0.25)
-plt.tight_layout()
-plt.show()
+        all_records.extend(records)
 
-# 4. Logistic response curve
-spreads = np.linspace(0, 1.5, 200)
-response = 0.33 * 0.70 * (1.0 / (1.0 + np.exp(-4.0 * (spreads - 0.60))))
+        total = payload.get("total")
+        if not records:
+            break
 
-plt.figure(figsize=(10, 5))
-plt.plot(spreads, 100 * response, color=green_dark, linewidth=3)
-plt.fill_between(spreads, 0, 100 * response, color=green_fill)
-plt.title("Illustrative household response curve")
-plt.xlabel("Today's price minus cheapest coming-day forecast [DKK/kWh]")
-plt.ylabel("Shifted share of flexible household load [%]")
-plt.grid(alpha=0.25)
-plt.tight_layout()
-plt.show()
+        offset += len(records)
+
+        if isinstance(total, int) and offset >= total:
+            break
+
+        if len(records) < page_size:
+            break
+
+    return all_records
 
 
-# Optional: save results
-df.to_csv("daily_energy_shift_results.csv", index=False)
+def write_csv(records: list[dict[str, Any]], output_path: Path) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fieldnames = list(records[0].keys()) if records else DEFAULT_COLUMNS
+    with output_path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(records)
+
+
+def _safe_float(value: Any) -> float:
+    if value in (None, "", "null"):
+        return 0.0
+    return float(value)
+
+
+def print_summary(records: list[dict[str, Any]]) -> None:
+    print(f"Fetched {len(records)} record(s).")
+    if not records:
+        return
+
+    first = records[0]
+    last = records[-1]
+    print(
+        "Time span in returned rows: "
+        f"{last.get('HourUTC', '?')} -> {first.get('HourUTC', '?')} "
+        "(UTC, depending on sort)"
+    )
+
+    price_areas = sorted({r.get("PriceArea", "") for r in records if r.get("PriceArea")})
+    forecast_types = sorted({r.get("ForecastType", "") for r in records if r.get("ForecastType")})
+
+    print(f"Price areas in result: {', '.join(price_areas) if price_areas else 'n/a'}")
+    print(f"Forecast types in result: {', '.join(forecast_types) if forecast_types else 'n/a'}")
+
+    numeric_columns = [
+        "ForecastDayAhead",
+        "ForecastIntraday",
+        "Forecast5Hour",
+        "Forecast1Hour",
+        "ForecastCurrent",
+    ]
+
+    print("\nColumn totals (sum over returned rows):")
+    for col in numeric_columns:
+        total = sum(_safe_float(r.get(col)) for r in records if r.get(col) is not None)
+        non_missing = sum(1 for r in records if r.get(col) not in (None, "", "null"))
+        print(f"  {col}: {total:,.2f} MWh/h across {non_missing} non-missing row(s)")
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Fetch hourly wind and solar forecasts from Energi Data Service (Forecasts_Hour)."
+    )
+    parser.add_argument(
+        "--start",
+        required=True,
+        help="Start datetime, e.g. 2026-03-01 or 2026-03-01T00:00",
+    )
+    parser.add_argument(
+        "--end",
+        required=True,
+        help="End datetime, exclusive",
+    )
+    parser.add_argument(
+        "--price-area",
+        action="append",
+        choices=["DK1", "DK2", "DE", "NO2", "SE3", "SE4"],
+        help="Filter by price area. Repeat to include multiple.",
+    )
+    parser.add_argument(
+        "--forecast-type",
+        action="append",
+        choices=["Solar", "Offshore Wind", "Onshore Wind"],
+        help='Filter by forecast type. Repeat to include multiple.',
+    )
+    parser.add_argument(
+        "--page-size",
+        type=int,
+        default=5000,
+        help="Rows per request (default: 5000)",
+    )
+    parser.add_argument(
+        "--sort",
+        default="HourUTC desc,PriceArea,ForecastType",
+        help="API sort expression",
+    )
+    parser.add_argument(
+        "--timezone",
+        help="Optional API timezone parameter, e.g. UTC",
+    )
+    parser.add_argument(
+        "--csv",
+        type=Path,
+        help="Write results to CSV",
+    )
+    parser.add_argument(
+        "--json",
+        type=Path,
+        help="Write results to JSON",
+    )
+    parser.add_argument(
+        "--print-records",
+        action="store_true",
+        help="Print all records as JSON to stdout",
+    )
+    return parser.parse_args()
+
+
+def main() -> int:
+    args = parse_args()
+
+    try:
+        records = fetch_records(
+            start=args.start,
+            end=args.end,
+            price_area=args.price_area,
+            forecast_type=args.forecast_type,
+            page_size=args.page_size,
+            sort=args.sort,
+            timezone=args.timezone,
+        )
+    except requests.HTTPError as exc:
+        print(f"HTTP error: {exc}", file=sys.stderr)
+        if exc.response is not None:
+            print(exc.response.text, file=sys.stderr)
+        return 1
+    except requests.RequestException as exc:
+        print(f"Request failed: {exc}", file=sys.stderr)
+        return 1
+    except Exception as exc:
+        print(f"Unexpected error: {exc}", file=sys.stderr)
+        return 1
+
+    print_summary(records)
+
+    if args.csv:
+        write_csv(records, args.csv)
+        print(f"Saved CSV to {args.csv}")
+
+    if args.json:
+        args.json.parent.mkdir(parents=True, exist_ok=True)
+        args.json.write_text(
+            json.dumps(records, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        print(f"Saved JSON to {args.json}")
+
+    if args.print_records:
+        print(json.dumps(records, indent=2, ensure_ascii=False))
+
+    if not args.csv and not args.json and not args.print_records:
+        preview = records[:5]
+        print("\nFirst rows:")
+        print(json.dumps(preview, indent=2, ensure_ascii=False))
+
+    example_params = build_params(
+        args.start,
+        args.end,
+        price_area=args.price_area,
+        forecast_type=args.forecast_type,
+        limit=min(args.page_size, 100),
+        offset=0,
+        sort=args.sort,
+        columns=DEFAULT_COLUMNS,
+        timezone=args.timezone,
+    )
+    print("\nExample request URL:")
+    print(f"{BASE_URL}?{urlencode(example_params)}")
+
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
