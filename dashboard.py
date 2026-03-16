@@ -138,7 +138,7 @@ def apply_page_style() -> None:
     )
 
 
-@st.cache_data(show_spinner=False)
+#@st.cache_data(show_spinner=False)
 def load_prices(path: Path) -> pd.DataFrame:
     if not path.exists():
         return pd.DataFrame()
@@ -163,7 +163,7 @@ def load_prices(path: Path) -> pd.DataFrame:
     return df
 
 
-@st.cache_data(show_spinner=False)
+#@st.cache_data(show_spinner=False)
 def load_consumption(path: Path) -> pd.DataFrame:
     if not path.exists():
         return pd.DataFrame()
@@ -186,7 +186,7 @@ def load_consumption(path: Path) -> pd.DataFrame:
     return df
 
 
-@st.cache_data(show_spinner=False)
+#@st.cache_data(show_spinner=False)
 def load_supply(path: Path) -> pd.DataFrame:
     if not path.exists():
         return pd.DataFrame()
