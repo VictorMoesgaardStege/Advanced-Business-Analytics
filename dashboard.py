@@ -351,7 +351,7 @@ def build_placeholder_forecast(
     return pd.DataFrame(rows)
 
 
-
+#bare et forsøg på at se om den laver en ny analyse
 
 def generate_recommendation_text(
     forecast_df: pd.DataFrame,
