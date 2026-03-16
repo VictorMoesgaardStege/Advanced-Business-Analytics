@@ -3,24 +3,127 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 
-def make_daily_prices(n_days=60, seed=42):
+from pathlib import Path
+import pandas as pd
+import numpy as np
+
+from pathlib import Path
+import pandas as pd
+import numpy as np
+
+
+def load_daily_system_consumption(
+    n_days=60,
+    csv_path=None,
+):
     """
-    Creates synthetic daily average electricity prices [DKK/MWh].
-    Replace this with real data if you have it.
+    Loads raw DK1 consumption data from CSV and returns the last n_days
+    as daily total system consumption [MWh/day].
+
+    Works for both:
+    - hourly data -> aggregated to daily totals
+    - already daily data -> used directly
     """
-    rng = np.random.default_rng(seed)
-    day = np.arange(n_days)
 
-    base = 650 + 80 * np.sin(2 * np.pi * day / 7) + 60 * np.sin(2 * np.pi * day / 30)
-    noise = rng.normal(0, 40, n_days)
+    if csv_path is None:
+        csv_path = Path(__file__).resolve().parents[2] / "data" / "consumption_dk1_raw.csv"
 
-    price = base + noise
+    df = pd.read_csv(csv_path)
 
-    # Add some random spikes
-    spike_days = rng.choice(n_days, size=max(3, n_days // 15), replace=False)
-    price[spike_days] += rng.uniform(250, 700, len(spike_days))
+    # ---- detect datetime column ----
+    possible_datetime_cols = [
+        "TimeDK"
+    ]
+    datetime_col = None
+    for col in possible_datetime_cols:
+        if col in df.columns:
+            datetime_col = col
+            break
 
-    return np.clip(price, 250, None)
+    if datetime_col is None:
+        raise ValueError(
+            f"Could not find a datetime column in {csv_path}. "
+            f"Available columns: {list(df.columns)}"
+        )
+
+    df[datetime_col] = pd.to_datetime(df[datetime_col])
+    df = df.sort_values(datetime_col)
+
+    # ---- detect consumption column ----
+    possible_consumption_cols = [
+        "ConsumptionkWh"
+    ]
+    consumption_col = None
+    for col in possible_consumption_cols:
+        if col in df.columns:
+            consumption_col = col
+            break
+
+    if consumption_col is None:
+        numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+        if len(numeric_cols) == 1:
+            consumption_col = numeric_cols[0]
+        else:
+            raise ValueError(
+                f"Could not find a consumption column in {csv_path}. "
+                f"Available columns: {list(df.columns)}"
+            )
+
+    df = df[[datetime_col, consumption_col]].copy()
+    df = df.rename(columns={datetime_col: "datetime", consumption_col: "consumption"})
+
+    # ---- decide whether data is hourly or already daily ----
+    df["date"] = df["datetime"].dt.floor("D")
+
+    obs_per_day = df.groupby("date").size().median()
+
+    if obs_per_day > 1:
+        # hourly/sub-daily data -> sum to daily total
+        daily_consumption = (
+            df.groupby("date", as_index=False)["consumption"]
+            .sum()
+            .sort_values("date")
+        )
+    else:
+        # already daily data
+        daily_consumption = (
+            df.groupby("date", as_index=False)["consumption"]
+            .first()
+            .sort_values("date")
+        )
+
+    if len(daily_consumption) < n_days:
+        raise ValueError(
+            f"Requested {n_days} days, but only found {len(daily_consumption)} daily values in {csv_path}"
+        )
+
+    return daily_consumption["consumption"].tail(n_days).to_numpy()
+
+
+def make_daily_prices(n_days=60, csv_path=None):
+
+    if csv_path is None:
+        csv_path = Path(__file__).resolve().parents[2] / "data" / "day_ahead_prices_dk1_raw.csv"
+
+    df = pd.read_csv(csv_path)
+
+    df["TimeDK"] = pd.to_datetime(df["TimeDK"])
+
+    df["date"] = df["TimeDK"].dt.floor("D")
+
+    daily_prices = (
+        df.groupby("date")["DayAheadPriceDKK"]
+        .mean()
+        .reset_index()
+        .sort_values("date")
+    )
+
+    daily_prices = daily_prices.tail(n_days)
+
+    dates = daily_prices["date"].to_numpy()
+    prices = daily_prices["DayAheadPriceDKK"].to_numpy()
+
+    return dates, prices
 
 
 def simulate_daily_shift(
@@ -49,24 +152,18 @@ def simulate_daily_shift(
     """
 
     rng = np.random.default_rng(seed)
-    dates = pd.date_range("2025-01-01", periods=n_days, freq="D")
-
     # Realised daily prices
-    price_today = make_daily_prices(n_days=n_days, seed=seed)
-
+    dates, price_today = make_daily_prices(
+        n_days=n_days,
+        csv_path=Path(__file__).resolve().parents[2] / "data" / "day_ahead_prices_dk1_raw.csv")
     # Forecasted daily prices (realised price + forecast error)
     forecast_error = rng.normal(0, 55, n_days)
     price_forecast = np.clip(price_today + forecast_error, 200, None)
 
-    # Synthetic daily total system energy demand
-    day = np.arange(n_days)
-    system_daily = (
-        system_daily_energy_mwh
-        + 6000 * np.sin(2 * np.pi * day / 7)
-        + 2500 * np.sin(2 * np.pi * day / 30)
-        + rng.normal(0, 1200, n_days)
+    system_daily = load_daily_system_consumption(
+        n_days=n_days,
+        csv_path=Path(__file__).resolve().parents[2] / "data" / "consumption_dk1_raw.csv"
     )
-    system_daily = np.clip(system_daily, 0.75 * system_daily_energy_mwh, None)
 
     household_daily = system_daily * household_share_of_system
     other_daily = system_daily - household_daily
@@ -237,4 +334,4 @@ plt.show()
 
 
 # Optional: save results
-df.to_csv("daily_energy_shift_results.csv", index=False)
+df.to_csv("data/figures/daily_energy_shift_results.csv", index=False)
