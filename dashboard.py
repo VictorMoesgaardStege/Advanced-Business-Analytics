@@ -138,7 +138,7 @@ def apply_page_style() -> None:
     )
 
 
-@st.cache_data(show_spinner=False)
+#@st.cache_data(show_spinner=False)
 def load_prices(path: Path) -> pd.DataFrame:
     if not path.exists():
         return pd.DataFrame()
@@ -163,7 +163,7 @@ def load_prices(path: Path) -> pd.DataFrame:
     return df
 
 
-@st.cache_data(show_spinner=False)
+#@st.cache_data(show_spinner=False)
 def load_consumption(path: Path) -> pd.DataFrame:
     if not path.exists():
         return pd.DataFrame()
@@ -186,7 +186,7 @@ def load_consumption(path: Path) -> pd.DataFrame:
     return df
 
 
-@st.cache_data(show_spinner=False)
+#@st.cache_data(show_spinner=False)
 def load_supply(path: Path) -> pd.DataFrame:
     if not path.exists():
         return pd.DataFrame()
@@ -502,7 +502,18 @@ Do not include any extra text before or after the JSON.
     try:
         llm_result = generate_llm_reasoning(prompt)
         raw_text = llm_result["raw_text"].strip()
-        parsed = json.loads(raw_text)
+
+        clean_text = raw_text
+
+        if clean_text.startswith("```json"):
+            clean_text = clean_text[len("```json"):].strip()
+        elif clean_text.startswith("```"):
+            clean_text = clean_text[len("```"):].strip()
+
+        if clean_text.endswith("```"):
+            clean_text = clean_text[:-3].strip()
+
+        parsed = json.loads(clean_text)
 
         if isinstance(parsed, dict):
             candidate_style = parsed.get("style", result["style"])
