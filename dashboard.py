@@ -351,20 +351,26 @@ def build_placeholder_forecast(
     return pd.DataFrame(rows)
 
 
-import json
+
 
 def generate_recommendation_text(
     forecast_df: pd.DataFrame,
     daily_prices: pd.DataFrame,
     daily_supply: pd.DataFrame,
     daily_consumption: pd.DataFrame,
-) -> tuple[str, str, str]:
+) -> dict:
     if forecast_df.empty:
-        return (
-            "No forecast available yet.",
-            "recommend-neutral",
-            "Add more data to activate the household recommendation engine.",
-        )
+        return {
+            "headline": "No forecast available yet.",
+            "style": "recommend-neutral",
+            "explanation": "Add more data to activate the household recommendation engine.",
+            "actions": [
+                "Check back when forecast data is available."
+            ],
+            "summary_bullets": [
+                "No forecast data available"
+            ],
+        }
 
     current_day = pd.to_datetime(forecast_df["Date"].min()) - pd.Timedelta(days=1)
     window_start = current_day - pd.Timedelta(days=5)
@@ -433,7 +439,7 @@ def generate_recommendation_text(
         consumption_lines.append("- No recent consumption history available.")
 
     prompt = f"""
-You are helping generate a very short recommendation for a Danish household electricity dashboard for DK1.
+You are helping generate an electricity planning assistant output for a Danish household electricity dashboard for DK1.
 
 Context:
 Current day:
@@ -452,50 +458,83 @@ Consumption background in a +/- 5 day window around the current day:
 {chr(10).join(consumption_lines)}
 
 Task:
-Give a short household-oriented electricity usage recommendation for the next few days.
+1. Briefly explain what the next few days of prices seem to indicate.
+2. Give practical household actions for flexible electricity use.
+3. Keep the language concise, cautious, and grounded in the provided data only.
 
 Rules:
 - Use only the information provided above.
-- Focus on practical household action.
-- Keep the wording concise and natural.
 - Do not invent market facts not present in the input.
+- Use cautious wording such as "may", "might", "suggests", or "looks".
+- Make the actions practical for a household.
 
 Return only valid JSON in this exact format:
 {{
   "headline": "...",
   "style": "recommend-good or recommend-warn or recommend-neutral",
-  "body": "..."
+  "explanation": "...",
+  "actions": ["...", "...", "..."],
+  "summary_bullets": ["...", "...", "..."]
 }}
 
 Do not include any extra text before or after the JSON.
 """.strip()
 
-    headline = "Use smart hourly shifting"
-    style = "recommend-neutral"
-    body = (
-        "The next few days look relatively stable on average. Focus on avoiding the most expensive evening hours "
-        "and shifting flexible consumption where possible."
-    )
+    result = {
+        "headline": "Use smart hourly shifting",
+        "style": "recommend-neutral",
+        "explanation": (
+            "The next few days look relatively stable on average. Prices may move somewhat, "
+            "but the overall picture does not suggest a major change."
+        ),
+        "actions": [
+            "Shift flexible consumption away from expensive evening hours.",
+            "Run dishwasher or laundry in lower-price hours when possible.",
+            "Watch for cheaper overnight or midday periods before charging devices."
+        ],
+        "summary_bullets": [
+            "Average prices look fairly stable",
+            "Supply and demand signals look mixed",
+            "Flexible loads should still be shifted"
+        ],
+    }
 
     try:
-        llm_result = generate_llm_reasoning(prompt, model="llama2")
+        llm_result = generate_llm_reasoning(prompt)
         raw_text = llm_result["raw_text"].strip()
-
         parsed = json.loads(raw_text)
 
         if isinstance(parsed, dict):
-            headline = parsed.get("headline", headline)
-            body = parsed.get("body", body)
-
-            candidate_style = parsed.get("style", style)
+            candidate_style = parsed.get("style", result["style"])
             if candidate_style in {"recommend-good", "recommend-warn", "recommend-neutral"}:
-                style = candidate_style
+                result["style"] = candidate_style
+
+            if isinstance(parsed.get("headline"), str) and parsed["headline"].strip():
+                result["headline"] = parsed["headline"].strip()
+
+            if isinstance(parsed.get("explanation"), str) and parsed["explanation"].strip():
+                result["explanation"] = parsed["explanation"].strip()
+
+            if isinstance(parsed.get("actions"), list):
+                cleaned_actions = [
+                    str(x).strip() for x in parsed["actions"]
+                    if str(x).strip()
+                ]
+                if cleaned_actions:
+                    result["actions"] = cleaned_actions[:3]
+
+            if isinstance(parsed.get("summary_bullets"), list):
+                cleaned_bullets = [
+                    str(x).strip() for x in parsed["summary_bullets"]
+                    if str(x).strip()
+                ]
+                if cleaned_bullets:
+                    result["summary_bullets"] = cleaned_bullets[:3]
 
     except Exception as e:
         print(f"Recommendation LLM/parsing failed: {e}")
 
-    return headline, style, body
-
+    return result
 
 def make_price_line_chart(today_df: pd.DataFrame) -> go.Figure:
     fig = go.Figure()
@@ -787,17 +826,37 @@ def render_main_dashboard() -> None:
     )
     make_forecast_card_row(forecast_df)
 
-    headline, style, body = generate_recommendation_text(forecast_df, daily_prices, daily_supply, daily_consumption)
+ 
+    recommendation = generate_recommendation_text(forecast_df, daily_prices, daily_supply, daily_consumption)
+
+    actions_html = "".join(
+        [f"<li>{action}</li>" for action in recommendation["actions"]]
+    )
+
     st.markdown(
-        f"""
+         f"""
         <div class="section-card">
-            <h4>🏠 What should a household do?</h4>
-            <p class="{style}" style="font-size: 1.1rem; margin-bottom: 0.2rem;">{headline}</p>
-            <p style="margin-top: 0.2rem;">{body}</p>
+            <h4>🏠 Household guidance</h4>
+            <p class="{recommendation['style']}" style="font-size: 1.1rem; margin-bottom: 0.2rem;">
+                {recommendation['headline']}
+            </p>
+            <p style="margin-top: 0.2rem;">{recommendation['explanation']}</p>
+            <ul>
+                {actions_html}
+            </ul>
         </div>
         """,
         unsafe_allow_html=True,
     )
+
+
+
+
+
+
+
+
+
 
     reasoning_left, reasoning_right = st.columns(2)
 
@@ -825,13 +884,13 @@ def render_main_dashboard() -> None:
                 "This is currently a simple daily-average demand background signal used for intuition, not a full predictive feature view."
             )
 
-    if not forecast_df.empty:
+    if recommendation["summary_bullets"]:
         st.markdown(
             '<div class="section-card"><h4>🧠 Forecast reasoning summary</h4></div>',
             unsafe_allow_html=True,
         )
         bullets = "\n".join(
-            [f"- **{row.Date.strftime('%a %d %b')}**: {row.Reason}" for _, row in forecast_df.iterrows()]
+            [f"- {item}" for item in recommendation["summary_bullets"]]
         )
         st.markdown(bullets)
 
