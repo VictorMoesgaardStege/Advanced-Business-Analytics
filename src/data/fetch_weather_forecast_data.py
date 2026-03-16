@@ -1,14 +1,20 @@
 #!/usr/bin/env python3
-"""Fetch archived deterministic weather forecasts from Open-Meteo Historical Forecast API.
+"""Fetch weather forecasts from Open-Meteo Previous Runs API.
+
+This script downloads hourly weather features plus previous forecast versions:
+- current / Day 0
+- previous_day1 (~24h before valid time)
+- previous_day2 (~48h before valid time)
+- previous_day3 (~72h before valid time)
+- previous_day4 (~96h before valid time)
+- previous_day5 (~120h before valid time)
 
 Example:
 
     python src/data/fetch_weather_forecast_data.py \
-        --start 2022-01-01 \
+        --start 2024-01-01 \
         --end 2026-03-16 \
         --csv data/weather_forecasts_raw.csv
-
-This downloads hourly weather forecast data for selected regions relevant to DK1.
 """
 
 from __future__ import annotations
@@ -25,21 +31,10 @@ from typing import Any
 import pandas as pd
 import requests
 
-BASE_URL = "https://historical-forecast-api.open-meteo.com/v1/forecast"
-
-# Replace this if Open-Meteo expects a different exact model slug in your tests
+BASE_URL = "https://previous-runs-api.open-meteo.com/v1/forecast"
 DEFAULT_MODEL = "ecmwf_ifs"
+DEFAULT_CSV = Path("data/weather_forecasts_raw.csv")
 
-DEFAULT_HOURLY_VARS = [
-    "wind_speed_120m",
-    "wind_direction_120m",
-    "shortwave_radiation",
-    "cloud_cover",
-    "temperature_2m",
-    "pressure_msl",
-]
-
-# Suggested relevant regions for DK1 price formation
 DEFAULT_LOCATIONS = [
     {"region": "DK1_west", "latitude": 56.15, "longitude": 8.45},
     {"region": "DK2_east", "latitude": 55.68, "longitude": 12.57},
@@ -48,11 +43,29 @@ DEFAULT_LOCATIONS = [
     {"region": "DE_north", "latitude": 54.30, "longitude": 9.70},
 ]
 
-DEFAULT_CSV = Path("data/weather_forecasts_raw.csv")
+BASE_VARS = [
+    "wind_speed_120m",
+    "wind_direction_120m",
+    "shortwave_radiation",
+    "cloud_cover",
+    "temperature_2m",
+    "pressure_msl",
+]
+
+
+def build_hourly_vars(base_vars: list[str], max_previous_day: int = 5) -> list[str]:
+    hourly_vars: list[str] = []
+    for var in base_vars:
+        hourly_vars.append(var)
+        for d in range(1, max_previous_day + 1):
+            hourly_vars.append(f"{var}_previous_day{d}")
+    return hourly_vars
+
+
+DEFAULT_HOURLY_VARS = build_hourly_vars(BASE_VARS, max_previous_day=5)
 
 
 def month_ranges(start: date, end: date):
-    """Yield inclusive monthly date ranges."""
     cur = start.replace(day=1)
     while cur <= end:
         if cur.month == 12:
@@ -67,7 +80,6 @@ def month_ranges(start: date, end: date):
 
 
 def fetch_json(session: requests.Session, params: dict[str, Any], timeout: int = 60) -> dict[str, Any]:
-    """Fetch JSON with retry."""
     last_exc: Exception | None = None
     for attempt in range(5):
         try:
@@ -88,7 +100,6 @@ def fetch_json(session: requests.Session, params: dict[str, Any], timeout: int =
 
 
 def response_to_records(payload: dict[str, Any], region_name: str) -> list[dict[str, Any]]:
-    """Convert one Open-Meteo response to row records."""
     hourly = payload.get("hourly", {})
     times = hourly.get("time")
 
@@ -97,19 +108,15 @@ def response_to_records(payload: dict[str, Any], region_name: str) -> list[dict[
 
     df = pd.DataFrame(hourly)
     df.insert(0, "region", region_name)
-
-    # Rename time column to align with your existing raw data style
     df = df.rename(columns={"time": "TimeDK"})
 
-    # Optional metadata columns
     df["Latitude"] = payload.get("latitude")
     df["Longitude"] = payload.get("longitude")
     df["Elevation"] = payload.get("elevation")
     df["Timezone"] = payload.get("timezone")
     df["TimezoneAbbreviation"] = payload.get("timezone_abbreviation")
 
-    # Reorder columns
-    preferred_order = [
+    first_cols = [
         "TimeDK",
         "region",
         "Latitude",
@@ -117,16 +124,9 @@ def response_to_records(payload: dict[str, Any], region_name: str) -> list[dict[
         "Elevation",
         "Timezone",
         "TimezoneAbbreviation",
-        "wind_speed_120m",
-        "wind_direction_120m",
-        "shortwave_radiation",
-        "cloud_cover",
-        "temperature_2m",
-        "pressure_msl",
     ]
-    existing_order = [c for c in preferred_order if c in df.columns]
-    remaining = [c for c in df.columns if c not in existing_order]
-    df = df[existing_order + remaining]
+    remaining_cols = [c for c in df.columns if c not in first_cols]
+    df = df[first_cols + remaining_cols]
 
     return df.to_dict(orient="records")
 
@@ -143,7 +143,6 @@ def fetch_records(
     temperature_unit: str = "celsius",
     precipitation_unit: str = "mm",
 ) -> list[dict[str, Any]]:
-    """Fetch weather records for all locations over monthly chunks."""
     if hourly_vars is None:
         hourly_vars = DEFAULT_HOURLY_VARS
     if locations is None:
@@ -199,23 +198,7 @@ def write_csv(records: list[dict[str, Any]], output_path: Path) -> None:
     if not records:
         with output_path.open("w", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
-            writer.writerow(
-                [
-                    "TimeDK",
-                    "region",
-                    "Latitude",
-                    "Longitude",
-                    "Elevation",
-                    "Timezone",
-                    "TimezoneAbbreviation",
-                    "wind_speed_120m",
-                    "wind_direction_120m",
-                    "shortwave_radiation",
-                    "cloud_cover",
-                    "temperature_2m",
-                    "pressure_msl",
-                ]
-            )
+            writer.writerow(["TimeDK", "region"])
         return
 
     fieldnames = list(records[0].keys())
@@ -231,6 +214,7 @@ def print_summary(records: list[dict[str, Any]]) -> None:
         return
 
     df = pd.DataFrame(records)
+
     if "TimeDK" in df.columns:
         df["TimeDK"] = pd.to_datetime(df["TimeDK"], errors="coerce")
         print(f"Time span: {df['TimeDK'].min()} -> {df['TimeDK'].max()}")
@@ -238,29 +222,41 @@ def print_summary(records: list[dict[str, Any]]) -> None:
     if "region" in df.columns:
         print("Regions:", ", ".join(sorted(df["region"].dropna().unique())))
 
-    numeric_cols = [
+    check_cols = [
         "wind_speed_120m",
-        "wind_direction_120m",
+        "wind_speed_120m_previous_day1",
+        "wind_speed_120m_previous_day2",
+        "wind_speed_120m_previous_day3",
+        "wind_speed_120m_previous_day4",
+        "wind_speed_120m_previous_day5",
         "shortwave_radiation",
-        "cloud_cover",
+        "shortwave_radiation_previous_day1",
+        "shortwave_radiation_previous_day2",
+        "shortwave_radiation_previous_day3",
+        "shortwave_radiation_previous_day4",
+        "shortwave_radiation_previous_day5",
         "temperature_2m",
-        "pressure_msl",
+        "temperature_2m_previous_day1",
+        "temperature_2m_previous_day2",
+        "temperature_2m_previous_day3",
+        "temperature_2m_previous_day4",
+        "temperature_2m_previous_day5",
     ]
 
-    print("\nNon-missing values by column:")
-    for col in numeric_cols:
+    print("\nNon-missing values by selected columns:")
+    for col in check_cols:
         if col in df.columns:
             print(f"  {col}: {df[col].notna().sum():,}")
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Fetch archived deterministic weather forecasts from Open-Meteo."
+        description="Fetch weather forecasts from Open-Meteo Previous Runs API."
     )
     parser.add_argument(
         "--start",
         required=True,
-        help="Start date, e.g. 2022-01-01",
+        help="Start date, e.g. 2024-01-01",
     )
     parser.add_argument(
         "--end",
@@ -286,7 +282,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--print-records",
         action="store_true",
-        help="Print records as JSON to stdout",
+        help="Print first records as JSON to stdout",
     )
     return parser.parse_args()
 
@@ -327,12 +323,7 @@ def main() -> int:
         print(f"Saved JSON to {args.json}")
 
     if args.print_records:
-        print(json.dumps(records[:20], indent=2, ensure_ascii=False))
-
-    if not args.csv and not args.json and not args.print_records:
-        preview = records[:5]
-        print("\nFirst rows:")
-        print(json.dumps(preview, indent=2, ensure_ascii=False))
+        print(json.dumps(records[:10], indent=2, ensure_ascii=False))
 
     return 0
 
