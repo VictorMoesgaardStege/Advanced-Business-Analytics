@@ -352,7 +352,7 @@ def build_placeholder_forecast(
 
 
 
-
+@st.cache_data(show_spinner=False, ttl=3600)
 def generate_recommendation_text(
     forecast_df: pd.DataFrame,
     daily_prices: pd.DataFrame,

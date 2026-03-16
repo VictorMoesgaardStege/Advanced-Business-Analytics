@@ -7,20 +7,28 @@ from google import genai
 client = genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
 
 
-def generate_llm_reasoning(
+ddef generate_llm_reasoning(
     prompt: str,
     model: str = "gemini-2.5-flash",
 ) -> Dict[str, str]:
+
     try:
+        print("PROMPT LENGTH:", len(prompt))
+        print("PROMPT PREVIEW:", prompt[:500])
+
         response = client.models.generate_content(
             model=model,
             contents=prompt,
         )
+
         text = (response.text or "").strip()
         print("GEMINI RAW RESPONSE:", text)
+
         return {"raw_text": text}
+
     except Exception as e:
         print(f"GEMINI ERROR FULL: {repr(e)}")
+
         return {
             "raw_text": (
                 '{"headline":"Fallback",'
