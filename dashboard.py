@@ -352,6 +352,38 @@ def build_placeholder_forecast(
 
 
 #bare et forsøg på at se om den laver en ny analyse
+def make_daily_history_chart(daily_df: pd.DataFrame, days_back: int) -> go.Figure:
+    plot_df = daily_df.tail(days_back).copy() if len(daily_df) > days_back else daily_df.copy()
+
+    fig = go.Figure()
+    fig.add_trace(
+        go.Scatter(
+            x=plot_df["Date"],
+            y=plot_df["AvgPriceDKK"],
+            mode="lines",
+            line=dict(color=COLORS["price"], width=3),
+            fill="tozeroy",
+            fillcolor="rgba(220,38,38,0.12)",
+            name="Daily average",
+            hovertemplate="%{x|%Y-%m-%d}<br>%{y:.1f} DKK/MWh<extra></extra>",
+        )
+    )
+
+    fig.update_layout(
+        template="plotly_white",
+        height=360,
+        margin=dict(l=20, r=20, t=20, b=20),
+        xaxis_title="Date",
+        yaxis_title="Average DKK/MWh",
+        paper_bgcolor="white",
+        plot_bgcolor="white",
+        showlegend=False,
+    )
+    return fig
+
+
+
+
 
 def generate_recommendation_text(
     forecast_df: pd.DataFrame,
@@ -770,21 +802,30 @@ def render_data_status(prices: pd.DataFrame, consumption: pd.DataFrame, supply: 
 
 def render_main_dashboard() -> None:
     apply_page_style()
+
     prices = load_prices(str(PRICE_FILE), PRICE_FILE.stat().st_mtime)
-    consumption = load_consumption(CONSUMPTION_FILE)
-    supply = load_supply(SUPPLY_FILE)
+    consumption = load_consumption(str(CONSUMPTION_FILE), CONSUMPTION_FILE.stat().st_mtime)
+    supply = load_supply(str(SUPPLY_FILE), SUPPLY_FILE.stat().st_mtime)
 
     daily_prices = compute_daily_price_history(prices)
     today_prices, latest_ts = get_today_hourly_prices(prices)
     daily_supply = build_supply_daily_features(supply)
     daily_consumption = build_consumption_daily_features(consumption)
-    forecast_df = build_placeholder_forecast(daily_prices, daily_supply, daily_consumption, horizon_days=5)
+    forecast_df = build_placeholder_forecast(
+        daily_prices,
+        daily_supply,
+        daily_consumption,
+        horizon_days=5,
+    )
 
     days_back, show_raw_preview = render_data_status(prices, consumption, supply)
     render_header(latest_ts)
 
     if prices.empty:
-        st.error("No day-ahead price file was found or could be parsed. Add data/day_ahead_prices_dk1_raw.csv to continue.")
+        st.error(
+            "No day-ahead price file was found or could be parsed. "
+            "Add data/day_ahead_prices_dk1_raw.csv to continue."
+        )
         return
 
     today_avg = today_prices["DayAheadPriceDKK"].mean() if not today_prices.empty else np.nan
@@ -821,14 +862,23 @@ def render_main_dashboard() -> None:
         if today_prices.empty:
             st.info("No hourly prices available for the latest day in the file.")
         else:
-            st.plotly_chart(make_price_line_chart(today_prices), use_container_width=True)
+            st.plotly_chart(
+                make_price_line_chart(today_prices),
+                use_container_width=True,
+            )
 
     with right:
         st.markdown(
             '<div class="section-card" style="min-height:72px;"><h4>📚 Historic daily average spot price</h4></div>',
             unsafe_allow_html=True,
         )
-        st.plotly_chart(make_daily_history_chart(daily_prices, days_back=days_back), use_container_width=True)
+        st.plotly_chart(
+            make_daily_history_chart(daily_prices, days_back=days_back),
+            use_container_width=True,
+        )
+
+        # Temporary debug: remove later if you want
+        # st.dataframe(daily_prices.tail(20), use_container_width=True)
 
     st.markdown(
         '<div class="section-card"><h4>🔮 Placeholder prediction: next 1–5 days average price</h4></div>',
@@ -836,15 +886,17 @@ def render_main_dashboard() -> None:
     )
     make_forecast_card_row(forecast_df)
 
- 
-    recommendation = generate_recommendation_text(forecast_df, daily_prices, daily_supply, daily_consumption)
-
-    actions_html = "".join(
-        [f"<li>{action}</li>" for action in recommendation["actions"]]
+    recommendation = generate_recommendation_text(
+        forecast_df,
+        daily_prices,
+        daily_supply,
+        daily_consumption,
     )
 
+    actions_html = "".join([f"<li>{action}</li>" for action in recommendation["actions"]])
+
     st.markdown(
-         f"""
+        f"""
         <div class="section-card">
             <h4>🏠 Household guidance</h4>
             <p class="{recommendation['style']}" style="font-size: 1.1rem; margin-bottom: 0.2rem;">
@@ -859,15 +911,6 @@ def render_main_dashboard() -> None:
         unsafe_allow_html=True,
     )
 
-
-
-
-
-
-
-
-
-
     reasoning_left, reasoning_right = st.columns(2)
 
     with reasoning_left:
@@ -878,7 +921,10 @@ def render_main_dashboard() -> None:
         if daily_supply.empty:
             st.info("No supply forecast file available yet.")
         else:
-            st.plotly_chart(make_supply_reasoning_chart(daily_supply, days_back), use_container_width=True)
+            st.plotly_chart(
+                make_supply_reasoning_chart(daily_supply, days_back),
+                use_container_width=True,
+            )
             st.caption("Solar is shown in amber, onshore wind in teal, and offshore wind in blue.")
 
     with reasoning_right:
@@ -889,7 +935,10 @@ def render_main_dashboard() -> None:
         if daily_consumption.empty:
             st.info("No consumption file available yet.")
         else:
-            st.plotly_chart(make_consumption_reasoning_chart(daily_consumption, days_back), use_container_width=True)
+            st.plotly_chart(
+                make_consumption_reasoning_chart(daily_consumption, days_back),
+                use_container_width=True,
+            )
             st.caption(
                 "This is currently a simple daily-average demand background signal used for intuition, not a full predictive feature view."
             )
@@ -899,9 +948,7 @@ def render_main_dashboard() -> None:
             '<div class="section-card"><h4>🧠 Forecast reasoning summary</h4></div>',
             unsafe_allow_html=True,
         )
-        bullets = "\n".join(
-            [f"- {item}" for item in recommendation["summary_bullets"]]
-        )
+        bullets = "\n".join([f"- {item}" for item in recommendation["summary_bullets"]])
         st.markdown(bullets)
 
     if show_raw_preview:
@@ -916,7 +963,3 @@ def render_main_dashboard() -> None:
             st.dataframe(consumption.tail(20), use_container_width=True)
         with tab3:
             st.dataframe(supply.tail(20), use_container_width=True)
-
-
-if __name__ == "__main__":
-    render_main_dashboard()
