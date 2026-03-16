@@ -11,4 +11,9 @@ python-dotenv>=1.0.0
 holidays>=0.36
 pytest>=7.4.0
 plotly>=5.15.0
-ollama>=0.1.0
+#ollama>=0.1.0
+streamlit
+pandas
+numpy
+plotly
+google-genai
