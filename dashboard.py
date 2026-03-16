@@ -502,6 +502,8 @@ Do not include any extra text before or after the JSON.
     try:
         llm_result = generate_llm_reasoning(prompt)
         raw_text = llm_result["raw_text"].strip()
+        st.write("RAW LLM OUTPUT:")
+        st.code(raw_text)
         parsed = json.loads(raw_text)
 
         if isinstance(parsed, dict):
