@@ -214,7 +214,7 @@ def simulate_daily_shift(
         best_spread_dkk_kwh[t] = spread_dkk_kwh
         chosen_target_day[t] = target
 
-        if spread_dkk_kwh <= 0:
+        if spread_dkk_kwh <= 0: 
             continue
 
         shift_share = response_fn(spread_dkk_kwh)
@@ -268,7 +268,7 @@ def simulate_daily_shift(
 df, summary = simulate_daily_shift(
     n_days=60,
     lookahead_days=5,
-    model="logistic"
+    model="logistic",
 )
 
 print("SUMMARY")
@@ -287,16 +287,6 @@ green_mid = "#43A047"
 green_light = "#A5D6A7"
 green_fill = "#E8F5E9"
 
-# 1. Daily price and forecast
-plt.figure(figsize=(12, 5))
-plt.plot(df["date"], df["price_today_dkk_per_mwh"], color=green_mid, linewidth=2, label="Today's known average price")
-plt.plot(df["date"], df["forecast_price_dkk_per_mwh"], color=green_light, linewidth=2, linestyle="--", label="Forecast price")
-plt.title("Daily average electricity price and forecast")
-plt.ylabel("Price [DKK/MWh]")
-plt.grid(alpha=0.25)
-plt.legend()
-plt.tight_layout()
-plt.show()
 
 # 2. Daily system energy before and after shifting
 plt.figure(figsize=(12, 5))
