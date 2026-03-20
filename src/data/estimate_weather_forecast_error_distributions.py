@@ -76,19 +76,26 @@ def build_error_rows(merged: pd.DataFrame) -> pd.DataFrame:
     rows = []
 
     for forecast_base, actual_base in VARIABLE_MAP.items():
-        actual_col = actual_base
+        # Figure out correct merged column names
+        if forecast_base == actual_base:
+            forecast_col_base = f"{forecast_base}_forecastfile"
+            actual_col_base = f"{actual_base}_actualfile"
+        else:
+            forecast_col_base = forecast_base
+            actual_col_base = actual_base
 
-        if actual_col not in merged.columns:
+        if actual_col_base not in merged.columns:
             continue
 
         for horizon_hours, suffix in HORIZONS.items():
             forecast_col = f"{forecast_base}_{suffix}"
 
+            # For direct matches, previous_day columns belong to forecast file only
             if forecast_col not in merged.columns:
                 continue
 
-            subset = merged[["TimeDK", "region", forecast_col, actual_col]].copy()
-            subset = subset.rename(columns={forecast_col: "forecast_value", actual_col: "actual_value"})
+            subset = merged[["TimeDK", "region", forecast_col, actual_col_base]].copy()
+            subset = subset.rename(columns={forecast_col: "forecast_value", actual_col_base: "actual_value"})
             subset = subset.dropna(subset=["forecast_value", "actual_value"])
 
             if subset.empty:
