@@ -103,26 +103,38 @@ def apply_page_style() -> None:
 
 
 @st.cache_data(show_spinner=False)
-def load_prices(path: Path) -> pd.DataFrame:
+def load_prices(path_str: str, mtime: float) -> pd.DataFrame:
+    path = Path(path_str)
     if not path.exists():
         return pd.DataFrame()
 
     df = pd.read_csv(path)
+
     if "TimeDK" in df.columns:
         df["TimeDK"] = pd.to_datetime(df["TimeDK"], errors="coerce")
+    elif "HourDK" in df.columns:
+        df["TimeDK"] = pd.to_datetime(df["HourDK"], errors="coerce")
     elif "TimeUTC" in df.columns:
         df["TimeDK"] = pd.to_datetime(df["TimeUTC"], errors="coerce")
-
-    numeric_cols = ["DayAheadPriceEUR", "DayAheadPriceDKK"]
-    for col in numeric_cols:
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors="coerce")
+    elif "HourUTC" in df.columns:
+        df["TimeDK"] = pd.to_datetime(df["HourUTC"], errors="coerce")
+    else:
+        return pd.DataFrame()
 
     if "PriceArea" in df.columns:
-        df = df[df["PriceArea"] == PRICE_AREA].copy()
+        df = df[df["PriceArea"].astype(str).str.strip() == PRICE_AREA].copy()
 
-    df = df.dropna(subset=["TimeDK"]).sort_values("TimeDK").reset_index(drop=True)
-    df["Date"] = df["TimeDK"].dt.date
+    if "DayAheadPriceDKK" in df.columns:
+        df["PriceDKK"] = pd.to_numeric(df["DayAheadPriceDKK"], errors="coerce")
+    else:
+        return pd.DataFrame()
+
+    df = df.dropna(subset=["TimeDK", "PriceDKK"]).copy()
+    df = df.sort_values("TimeDK").reset_index(drop=True)
+
+    df["Date"] = df["TimeDK"].dt.normalize()
+    df["Hour"] = df["TimeDK"].dt.hour
+
     return df
 
 
@@ -198,9 +210,23 @@ def get_today_hourly_prices(price_df: pd.DataFrame) -> tuple[pd.DataFrame, Optio
         return pd.DataFrame(), None
 
     latest_ts = price_df["TimeDK"].max()
-    today = latest_ts.date()
+    today = latest_ts.normalize()
+
     today_df = price_df[price_df["Date"] == today].copy()
-    return today_df, latest_ts
+
+    if today_df.empty:
+        return pd.DataFrame(), latest_ts
+
+    hourly_df = (
+        today_df.groupby("Hour", as_index=False)["PriceDKK"]
+        .mean()
+        .rename(columns={"PriceDKK": "HourlyPriceDKK"})
+    )
+
+    hourly_df["TimeDK"] = pd.to_datetime(today) + pd.to_timedelta(hourly_df["Hour"], unit="h")
+    hourly_df = hourly_df.sort_values("TimeDK").reset_index(drop=True)
+
+    return hourly_df, latest_ts
 
 
 def choose_supply_value_column(df: pd.DataFrame) -> Optional[str]:
@@ -349,11 +375,13 @@ def generate_recommendation_text(forecast_df: pd.DataFrame) -> tuple[str, str, s
 
 
 def make_price_line_chart(today_df: pd.DataFrame) -> go.Figure:
+    plot_df = today_df.sort_values("TimeDK").copy()
+
     fig = go.Figure()
     fig.add_trace(
         go.Scatter(
-            x=today_df["TimeDK"],
-            y=today_df["DayAheadPriceDKK"],
+            x=plot_df["TimeDK"],
+            y=plot_df["HourlyPriceDKK"],
             mode="lines+markers",
             line=dict(color=COLORS["price"], width=3),
             marker=dict(size=7),
@@ -361,9 +389,10 @@ def make_price_line_chart(today_df: pd.DataFrame) -> go.Figure:
             hovertemplate="%{x|%H:%M}<br>%{y:.1f} DKK/MWh<extra></extra>",
         )
     )
+
     fig.update_layout(
         template="plotly_white",
-        height=340,
+        height=360,
         margin=dict(l=20, r=20, t=20, b=20),
         xaxis_title="Hour",
         yaxis_title="DKK/MWh",
@@ -572,6 +601,14 @@ def render_main_dashboard() -> None:
     consumption = load_consumption(CONSUMPTION_FILE)
     supply = load_supply(SUPPLY_FILE)
 
+    st.write("PRICE_FILE exists:", PRICE_FILE.exists())
+    st.write("PRICE_FILE path:", str(PRICE_FILE))
+
+    if PRICE_FILE.exists():
+        raw_prices = pd.read_csv(PRICE_FILE)
+        st.write("Raw price columns:", raw_prices.columns.tolist())
+        st.text(raw_prices.head(10).to_string())
+
     daily_prices = compute_daily_price_history(prices)
     today_prices, latest_ts = get_today_hourly_prices(prices)
     daily_supply = build_supply_daily_features(supply)
@@ -585,9 +622,9 @@ def render_main_dashboard() -> None:
         st.error("No day-ahead price file was found or could be parsed. Add data/day_ahead_prices_dk1_raw.csv to continue.")
         return
 
-    today_avg = today_prices["DayAheadPriceDKK"].mean() if not today_prices.empty else np.nan
-    today_min = today_prices["DayAheadPriceDKK"].min() if not today_prices.empty else np.nan
-    today_max = today_prices["DayAheadPriceDKK"].max() if not today_prices.empty else np.nan
+    today_avg = today_prices["HourlyPriceDKK"].mean() if not today_prices.empty else np.nan
+    today_min = today_prices["HourlyPriceDKK"].min() if not today_prices.empty else np.nan
+    today_max = today_prices["HourlyPriceDKK"].max() if not today_prices.empty else np.nan
 
     c1, c2, c3 = st.columns(3)
     for c, title, value in [
