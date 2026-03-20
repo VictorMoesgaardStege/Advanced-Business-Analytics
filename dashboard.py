@@ -13,7 +13,6 @@ import json
 from prompting import generate_llm_reasoning
 
 
-
 # ============================================================
 # Streamlit dashboard skeleton for internal DK1 household users
 # Uses existing raw CSV files from the repository.
@@ -138,7 +137,37 @@ def apply_page_style() -> None:
     )
 
 
-#@st.cache_data(show_spinner=False)
+def _find_first_existing_column(df: pd.DataFrame, candidates: list[str]) -> Optional[str]:
+    for col in candidates:
+        if col in df.columns:
+            return col
+    return None
+
+
+def _parse_datetime_column(df: pd.DataFrame, candidates: list[str]) -> pd.Series:
+    col = _find_first_existing_column(df, candidates)
+    if col is None:
+        return pd.Series(pd.NaT, index=df.index)
+
+    s = pd.to_datetime(df[col], errors="coerce")
+
+    try:
+        if hasattr(s.dt, "tz") and s.dt.tz is not None:
+            s = s.dt.tz_convert("Europe/Copenhagen").dt.tz_localize(None)
+    except Exception:
+        pass
+
+    return s
+
+
+def _coerce_numeric_columns(df: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
+    for col in columns:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+    return df
+
+
+# @st.cache_data(show_spinner=False)
 def load_prices(path_str: str, mtime: float) -> pd.DataFrame:
     path = Path(path_str)
     if not path.exists():
@@ -146,59 +175,88 @@ def load_prices(path_str: str, mtime: float) -> pd.DataFrame:
 
     df = pd.read_csv(path)
 
-    if "TimeDK" in df.columns:
-        df["TimeDK"] = pd.to_datetime(df["TimeDK"], errors="coerce")
-    elif "TimeUTC" in df.columns:
-        df["TimeDK"] = pd.to_datetime(df["TimeUTC"], errors="coerce")
+    df["TimeDK"] = _parse_datetime_column(
+        df,
+        ["TimeDK", "HourDK", "DatetimeDK", "DateTime", "TimeUTC", "HourUTC"],
+    )
 
-    numeric_cols = ["DayAheadPriceEUR", "DayAheadPriceDKK"]
-    for col in numeric_cols:
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors="coerce")
+    df = _coerce_numeric_columns(
+        df,
+        ["DayAheadPriceDKK", "DayAheadPriceEUR", "SpotPriceDKK", "SpotPriceEUR"],
+    )
 
     if "PriceArea" in df.columns:
-        df = df[df["PriceArea"] == PRICE_AREA].copy()
+        df = df[df["PriceArea"].astype(str).str.strip() == PRICE_AREA].copy()
 
-    df = df.dropna(subset=["TimeDK"]).sort_values("TimeDK").reset_index(drop=True)
-    df["Date"] = df["TimeDK"].dt.date
+    if "DayAheadPriceDKK" not in df.columns:
+        if "SpotPriceDKK" in df.columns:
+            df["DayAheadPriceDKK"] = df["SpotPriceDKK"]
+        elif "DayAheadPriceEUR" in df.columns:
+            df["DayAheadPriceDKK"] = df["DayAheadPriceEUR"] * 7.45
+        elif "SpotPriceEUR" in df.columns:
+            df["DayAheadPriceDKK"] = df["SpotPriceEUR"] * 7.45
+
+    df = df.dropna(subset=["TimeDK", "DayAheadPriceDKK"]).copy()
+    df = df.sort_values("TimeDK").drop_duplicates(subset=["TimeDK"]).reset_index(drop=True)
+
+    df["Date"] = df["TimeDK"].dt.normalize()
+    df["Hour"] = df["TimeDK"].dt.hour
     return df
 
-#@st.cache_data(show_spinner=False)
+
+# @st.cache_data(show_spinner=False)
 def load_consumption(path: Path) -> pd.DataFrame:
     if not path.exists():
         return pd.DataFrame()
 
     df = pd.read_csv(path)
 
-    if "TimeDK" in df.columns:
-        df["TimeDK"] = pd.to_datetime(df["TimeDK"], errors="coerce")
-    elif "Date" in df.columns:
-        df["TimeDK"] = pd.to_datetime(df["Date"], errors="coerce")
-
-    if "ConsumptionkWh" in df.columns:
-        df["ConsumptionkWh"] = pd.to_numeric(df["ConsumptionkWh"], errors="coerce")
+    df["TimeDK"] = _parse_datetime_column(
+        df,
+        ["TimeDK", "HourDK", "DatetimeDK", "DateTime", "Date", "TimeUTC", "HourUTC"],
+    )
 
     if "PriceArea" in df.columns:
-        df = df[df["PriceArea"] == PRICE_AREA].copy()
+        df = df[df["PriceArea"].astype(str).str.strip() == PRICE_AREA].copy()
 
-    df = df.dropna(subset=["TimeDK"]).sort_values("TimeDK").reset_index(drop=True)
-    df["Date"] = df["TimeDK"].dt.date
+    value_candidates = [
+        "ConsumptionkWh",
+        "ConsumptionKWh",
+        "ConsumptionMWh",
+        "ConsumptionMW",
+        "Consumption",
+        "TotalConsumption",
+    ]
+    value_col = _find_first_existing_column(df, value_candidates)
+
+    if value_col is None:
+        return pd.DataFrame()
+
+    df[value_col] = pd.to_numeric(df[value_col], errors="coerce")
+    df["ConsumptionValue"] = df[value_col]
+
+    df = df.dropna(subset=["TimeDK", "ConsumptionValue"]).copy()
+    df = df.sort_values("TimeDK").reset_index(drop=True)
+
+    df["Date"] = df["TimeDK"].dt.normalize()
+    df["Hour"] = df["TimeDK"].dt.hour
     return df
 
 
-#@st.cache_data(show_spinner=False)
+# @st.cache_data(show_spinner=False)
 def load_supply(path: Path) -> pd.DataFrame:
     if not path.exists():
         return pd.DataFrame()
 
     df = pd.read_csv(path)
 
-    if "HourDK" in df.columns:
-        df["TimeDK"] = pd.to_datetime(df["HourDK"], errors="coerce")
-    elif "HourUTC" in df.columns:
-        df["TimeDK"] = pd.to_datetime(df["HourUTC"], errors="coerce")
-    else:
-        df["TimeDK"] = pd.NaT
+    df["TimeDK"] = _parse_datetime_column(
+        df,
+        ["TimeDK", "HourDK", "DatetimeDK", "DateTime", "HourUTC", "TimeUTC"],
+    )
+
+    if "PriceArea" in df.columns:
+        df = df[df["PriceArea"].astype(str).str.strip() == PRICE_AREA].copy()
 
     numeric_cols = [
         "ForecastDayAhead",
@@ -206,16 +264,55 @@ def load_supply(path: Path) -> pd.DataFrame:
         "Forecast5Hour",
         "Forecast1Hour",
         "ForecastCurrent",
+        "Value",
+        "Forecast",
+        "Production",
     ]
-    for col in numeric_cols:
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors="coerce")
+    df = _coerce_numeric_columns(df, numeric_cols)
 
-    if "PriceArea" in df.columns:
-        df = df[df["PriceArea"] == PRICE_AREA].copy()
+    value_col = None
+    for col in [
+        "ForecastCurrent",
+        "Forecast1Hour",
+        "Forecast5Hour",
+        "ForecastIntraday",
+        "ForecastDayAhead",
+        "Value",
+        "Forecast",
+        "Production",
+    ]:
+        if col in df.columns and df[col].notna().any():
+            value_col = col
+            break
 
-    df = df.dropna(subset=["TimeDK"]).sort_values("TimeDK").reset_index(drop=True)
-    df["Date"] = df["TimeDK"].dt.date
+    if value_col is None:
+        return pd.DataFrame()
+
+    df["ForecastValue"] = df[value_col]
+
+    type_candidates = ["ForecastType", "ProductionType", "Type", "Category"]
+    type_col = _find_first_existing_column(df, type_candidates)
+
+    if type_col is None:
+        df["ForecastType"] = "Unknown"
+    else:
+        df["ForecastType"] = df[type_col].astype(str).str.strip()
+
+    df["ForecastType"] = df["ForecastType"].replace(
+        {
+            "OnshoreWindPower": "Onshore Wind",
+            "OffshoreWindPower": "Offshore Wind",
+            "SolarPower": "Solar",
+            "Wind Onshore": "Onshore Wind",
+            "Wind Offshore": "Offshore Wind",
+        }
+    )
+
+    df = df.dropna(subset=["TimeDK", "ForecastValue"]).copy()
+    df = df.sort_values("TimeDK").reset_index(drop=True)
+
+    df["Date"] = df["TimeDK"].dt.normalize()
+    df["Hour"] = df["TimeDK"].dt.hour
     return df
 
 
@@ -227,8 +324,9 @@ def compute_daily_price_history(price_df: pd.DataFrame) -> pd.DataFrame:
         price_df.groupby("Date", as_index=False)["DayAheadPriceDKK"]
         .mean()
         .rename(columns={"DayAheadPriceDKK": "AvgPriceDKK"})
+        .sort_values("Date")
+        .reset_index(drop=True)
     )
-    out["Date"] = pd.to_datetime(out["Date"])
     return out
 
 
@@ -237,60 +335,48 @@ def get_today_hourly_prices(price_df: pd.DataFrame) -> tuple[pd.DataFrame, Optio
         return pd.DataFrame(), None
 
     latest_ts = price_df["TimeDK"].max()
-    today = latest_ts.date()
+    today = latest_ts.normalize()
     today_df = price_df[price_df["Date"] == today].copy()
     return today_df, latest_ts
 
 
-def choose_supply_value_column(df: pd.DataFrame) -> Optional[str]:
-    candidates = [
-        "ForecastCurrent",
-        "Forecast1Hour",
-        "Forecast5Hour",
-        "ForecastIntraday",
-        "ForecastDayAhead",
-    ]
-    for col in candidates:
-        if col in df.columns and df[col].notna().any():
-            return col
-    return None
-
-
 def build_supply_daily_features(supply_df: pd.DataFrame) -> pd.DataFrame:
-    if supply_df.empty or "ForecastType" not in supply_df.columns:
+    if supply_df.empty or "ForecastType" not in supply_df.columns or "ForecastValue" not in supply_df.columns:
         return pd.DataFrame(columns=["Date", "Solar", "Onshore Wind", "Offshore Wind", "TotalRenewables"])
 
-    value_col = choose_supply_value_column(supply_df)
-    if value_col is None:
+    keep_types = ["Solar", "Onshore Wind", "Offshore Wind"]
+
+    tmp = supply_df[supply_df["ForecastType"].isin(keep_types)].copy()
+    if tmp.empty:
         return pd.DataFrame(columns=["Date", "Solar", "Onshore Wind", "Offshore Wind", "TotalRenewables"])
 
-    grouped = (
-        supply_df.groupby(["Date", "ForecastType"], as_index=False)[value_col]
+    out = (
+        tmp.groupby(["Date", "ForecastType"], as_index=False)["ForecastValue"]
         .mean()
-        .pivot(index="Date", columns="ForecastType", values=value_col)
+        .pivot(index="Date", columns="ForecastType", values="ForecastValue")
         .reset_index()
     )
 
-    for col in ["Solar", "Onshore Wind", "Offshore Wind"]:
-        if col not in grouped.columns:
-            grouped[col] = np.nan
+    for col in keep_types:
+        if col not in out.columns:
+            out[col] = np.nan
 
-    grouped["TotalRenewables"] = grouped[["Solar", "Onshore Wind", "Offshore Wind"]].sum(axis=1, skipna=True)
-    grouped["Date"] = pd.to_datetime(grouped["Date"])
-    return grouped.sort_values("Date")
+    out["TotalRenewables"] = out[keep_types].sum(axis=1, skipna=True)
+    out = out.sort_values("Date").reset_index(drop=True)
+    return out
 
 
 def build_consumption_daily_features(cons_df: pd.DataFrame) -> pd.DataFrame:
-    if cons_df.empty or "ConsumptionkWh" not in cons_df.columns:
-        return pd.DataFrame(columns=["Date", "AvgConsumptionkWh"])
+    if cons_df.empty or "ConsumptionValue" not in cons_df.columns:
+        return pd.DataFrame(columns=["Date", "DailyConsumption", "AvgHourlyConsumption"])
 
     out = (
-        cons_df.groupby("Date", as_index=False)["ConsumptionkWh"]
-        .mean()
-        .rename(columns={"ConsumptionkWh": "AvgConsumptionkWh"})
+        cons_df.groupby("Date", as_index=False)["ConsumptionValue"]
+        .agg(DailyConsumption="sum", AvgHourlyConsumption="mean")
+        .sort_values("Date")
+        .reset_index(drop=True)
     )
-    out["Date"] = pd.to_datetime(out["Date"])
-    return out.sort_values("Date")
+    return out
 
 
 def build_placeholder_forecast(
@@ -316,10 +402,19 @@ def build_placeholder_forecast(
     consumption_trend = 0.0
 
     if not supply_recent.empty and supply_recent["TotalRenewables"].notna().any():
-        renewable_trend = supply_recent["TotalRenewables"].tail(3).mean() - supply_recent["TotalRenewables"].head(3).mean()
+        renewable_trend = (
+            supply_recent["TotalRenewables"].tail(3).mean()
+            - supply_recent["TotalRenewables"].head(3).mean()
+        )
 
-    if not cons_recent.empty and cons_recent["AvgConsumptionkWh"].notna().any():
-        consumption_trend = cons_recent["AvgConsumptionkWh"].tail(3).mean() - cons_recent["AvgConsumptionkWh"].head(3).mean()
+    cons_col = None
+    for c in ["DailyConsumption", "AvgHourlyConsumption"]:
+        if c in cons_recent.columns and cons_recent[c].notna().any():
+            cons_col = c
+            break
+
+    if cons_col is not None:
+        consumption_trend = cons_recent[cons_col].tail(3).mean() - cons_recent[cons_col].head(3).mean()
 
     renewable_scale = 0.0 if math.isnan(renewable_trend) else renewable_trend * (-0.015)
     consumption_scale = 0.0 if math.isnan(consumption_trend) else consumption_trend * 0.0008
@@ -349,40 +444,6 @@ def build_placeholder_forecast(
         )
 
     return pd.DataFrame(rows)
-
-
-#bare et forsøg på at se om den laver en ny analyse
-def make_daily_history_chart(daily_df: pd.DataFrame, days_back: int) -> go.Figure:
-    plot_df = daily_df.tail(days_back).copy() if len(daily_df) > days_back else daily_df.copy()
-
-    fig = go.Figure()
-    fig.add_trace(
-        go.Scatter(
-            x=plot_df["Date"],
-            y=plot_df["AvgPriceDKK"],
-            mode="lines",
-            line=dict(color=COLORS["price"], width=3),
-            fill="tozeroy",
-            fillcolor="rgba(220,38,38,0.12)",
-            name="Daily average",
-            hovertemplate="%{x|%Y-%m-%d}<br>%{y:.1f} DKK/MWh<extra></extra>",
-        )
-    )
-
-    fig.update_layout(
-        template="plotly_white",
-        height=360,
-        margin=dict(l=20, r=20, t=20, b=20),
-        xaxis_title="Date",
-        yaxis_title="Average DKK/MWh",
-        paper_bgcolor="white",
-        plot_bgcolor="white",
-        showlegend=False,
-    )
-    return fig
-
-
-
 
 
 def generate_recommendation_text(
@@ -461,11 +522,17 @@ def generate_recommendation_text(
         supply_lines.append("- No recent renewable supply history available.")
 
     consumption_lines = []
-    if not consumption_window.empty and "AvgConsumptionkWh" in consumption_window.columns:
+    if not consumption_window.empty and "DailyConsumption" in consumption_window.columns:
         for _, row in consumption_window.tail(11).iterrows():
             consumption_lines.append(
                 f"- {pd.to_datetime(row['Date']).strftime('%Y-%m-%d')}: "
-                f"average consumption {row['AvgConsumptionkWh']:.2f} kWh"
+                f"daily consumption {row['DailyConsumption']:.2f}"
+            )
+    elif not consumption_window.empty and "AvgHourlyConsumption" in consumption_window.columns:
+        for _, row in consumption_window.tail(11).iterrows():
+            consumption_lines.append(
+                f"- {pd.to_datetime(row['Date']).strftime('%Y-%m-%d')}: "
+                f"average hourly consumption {row['AvgHourlyConsumption']:.2f}"
             )
     else:
         consumption_lines.append("- No recent consumption history available.")
@@ -579,15 +646,18 @@ Do not include any extra text before or after the JSON.
 
     return result
 
+
 def make_price_line_chart(today_df: pd.DataFrame) -> go.Figure:
+    plot_df = today_df.sort_values("TimeDK").copy()
+
     fig = go.Figure()
     fig.add_trace(
         go.Scatter(
-            x=today_df["TimeDK"],
-            y=today_df["DayAheadPriceDKK"],
+            x=plot_df["TimeDK"],
+            y=plot_df["DayAheadPriceDKK"],
             mode="lines+markers",
             line=dict(color=COLORS["price"], width=3),
-            marker=dict(size=7),
+            marker=dict(size=6),
             name="Spot price",
             hovertemplate="%{x|%H:%M}<br>%{y:.1f} DKK/MWh<extra></extra>",
         )
@@ -606,7 +676,8 @@ def make_price_line_chart(today_df: pd.DataFrame) -> go.Figure:
 
 
 def make_daily_history_chart(daily_df: pd.DataFrame, days_back: int) -> go.Figure:
-    plot_df = daily_df.tail(days_back).copy() if len(daily_df) > days_back else daily_df.copy()
+    plot_df = daily_df.sort_values("Date").tail(days_back).copy()
+
     fig = go.Figure()
     fig.add_trace(
         go.Scatter(
@@ -620,6 +691,7 @@ def make_daily_history_chart(daily_df: pd.DataFrame, days_back: int) -> go.Figur
             hovertemplate="%{x|%Y-%m-%d}<br>%{y:.1f} DKK/MWh<extra></extra>",
         )
     )
+
     fig.update_layout(
         template="plotly_white",
         height=360,
@@ -668,46 +740,33 @@ def make_forecast_card_row(forecast_df: pd.DataFrame) -> None:
 
 
 def make_supply_reasoning_chart(daily_supply: pd.DataFrame, days_back: int) -> go.Figure:
-    plot_df = daily_supply.tail(days_back).copy()
+    plot_df = daily_supply.sort_values("Date").tail(days_back).copy()
     fig = go.Figure()
 
-    if "Solar" in plot_df.columns:
-        fig.add_trace(
-            go.Scatter(
-                x=plot_df["Date"],
-                y=plot_df["Solar"],
-                mode="lines",
-                name="☀️ Solar",
-                line=dict(color=COLORS["solar"], width=3),
+    series_map = [
+        ("Solar", COLORS["solar"], "☀️ Solar"),
+        ("Onshore Wind", COLORS["wind_onshore"], "🌿 Onshore wind"),
+        ("Offshore Wind", COLORS["wind_offshore"], "🌊 Offshore wind"),
+    ]
+
+    for col, color, label in series_map:
+        if col in plot_df.columns and plot_df[col].notna().any():
+            fig.add_trace(
+                go.Scatter(
+                    x=plot_df["Date"],
+                    y=plot_df[col],
+                    mode="lines",
+                    name=label,
+                    line=dict(color=color, width=3),
+                )
             )
-        )
-    if "Onshore Wind" in plot_df.columns:
-        fig.add_trace(
-            go.Scatter(
-                x=plot_df["Date"],
-                y=plot_df["Onshore Wind"],
-                mode="lines",
-                name="🌿 Onshore wind",
-                line=dict(color=COLORS["wind_onshore"], width=3),
-            )
-        )
-    if "Offshore Wind" in plot_df.columns:
-        fig.add_trace(
-            go.Scatter(
-                x=plot_df["Date"],
-                y=plot_df["Offshore Wind"],
-                mode="lines",
-                name="🌊 Offshore wind",
-                line=dict(color=COLORS["wind_offshore"], width=3),
-            )
-        )
 
     fig.update_layout(
         template="plotly_white",
         height=380,
         margin=dict(l=20, r=20, t=20, b=20),
         xaxis_title="Date",
-        yaxis_title="MWh/h",
+        yaxis_title="Average forecast level",
         legend_title="Supply source",
         paper_bgcolor="white",
         plot_bgcolor="white",
@@ -716,15 +775,19 @@ def make_supply_reasoning_chart(daily_supply: pd.DataFrame, days_back: int) -> g
 
 
 def make_consumption_reasoning_chart(daily_consumption: pd.DataFrame, days_back: int) -> go.Figure:
-    plot_df = daily_consumption.tail(days_back).copy()
+    plot_df = daily_consumption.sort_values("Date").tail(days_back).copy()
+
+    y_col = "DailyConsumption" if "DailyConsumption" in plot_df.columns else "AvgHourlyConsumption"
+
     fig = go.Figure()
     fig.add_trace(
         go.Bar(
             x=plot_df["Date"],
-            y=plot_df["AvgConsumptionkWh"],
+            y=plot_df[y_col],
             name="🏠 Consumption",
             marker_color=COLORS["consumption"],
             opacity=0.85,
+            hovertemplate="%{x|%Y-%m-%d}<br>%{y:.1f}<extra></extra>",
         )
     )
     fig.update_layout(
@@ -732,7 +795,7 @@ def make_consumption_reasoning_chart(daily_consumption: pd.DataFrame, days_back:
         height=380,
         margin=dict(l=20, r=20, t=20, b=20),
         xaxis_title="Date",
-        yaxis_title="Average kWh",
+        yaxis_title="Daily consumption" if y_col == "DailyConsumption" else "Average hourly consumption",
         paper_bgcolor="white",
         plot_bgcolor="white",
         showlegend=False,
@@ -868,15 +931,12 @@ def render_main_dashboard() -> None:
     )
     make_forecast_card_row(forecast_df)
 
- 
     recommendation = generate_recommendation_text(forecast_df, daily_prices, daily_supply, daily_consumption)
 
-    actions_html = "".join(
-        [f"<li>{action}</li>" for action in recommendation["actions"]]
-    )
+    actions_html = "".join([f"<li>{action}</li>" for action in recommendation["actions"]])
 
     st.markdown(
-         f"""
+        f"""
         <div class="section-card">
             <h4>🏠 Household guidance</h4>
             <p class="{recommendation['style']}" style="font-size: 1.1rem; margin-bottom: 0.2rem;">
@@ -890,15 +950,6 @@ def render_main_dashboard() -> None:
         """,
         unsafe_allow_html=True,
     )
-
-
-
-
-
-
-
-
-
 
     reasoning_left, reasoning_right = st.columns(2)
 
@@ -931,9 +982,7 @@ def render_main_dashboard() -> None:
             '<div class="section-card"><h4>🧠 Forecast reasoning summary</h4></div>',
             unsafe_allow_html=True,
         )
-        bullets = "\n".join(
-            [f"- {item}" for item in recommendation["summary_bullets"]]
-        )
+        bullets = "\n".join([f"- {item}" for item in recommendation["summary_bullets"]])
         st.markdown(bullets)
 
     if show_raw_preview:
