@@ -572,6 +572,14 @@ def render_main_dashboard() -> None:
     consumption = load_consumption(CONSUMPTION_FILE)
     supply = load_supply(SUPPLY_FILE)
 
+    st.write("PRICE_FILE exists:", PRICE_FILE.exists())
+    st.write("PRICE_FILE path:", str(PRICE_FILE))
+
+    if PRICE_FILE.exists():
+        raw_prices = pd.read_csv(PRICE_FILE)
+        st.write("Raw price columns:", raw_prices.columns.tolist())
+        st.dataframe(raw_prices.head(10), use_container_width=True)
+
     daily_prices = compute_daily_price_history(prices)
     today_prices, latest_ts = get_today_hourly_prices(prices)
     daily_supply = build_supply_daily_features(supply)
