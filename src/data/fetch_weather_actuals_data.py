@@ -1,20 +1,12 @@
 #!/usr/bin/env python3
-"""Fetch weather forecasts from Open-Meteo Previous Runs API.
-
-This script downloads hourly weather features plus previous forecast versions:
-- current / Day 0
-- previous_day1 (~24h before valid time)
-- previous_day2 (~48h before valid time)
-- previous_day3 (~72h before valid time)
-- previous_day4 (~96h before valid time)
-- previous_day5 (~120h before valid time)
+"""Fetch historical actual weather data from Open-Meteo Historical Weather API.
 
 Example:
 
-    python src/data/fetch_weather_forecast_data.py \
-        --start 2024-01-01 \
+    python src/data/fetch_weather_actuals_data.py \
+        --start 2022-01-01 \
         --end 2026-03-16 \
-        --csv data/weather_forecasts_raw.csv
+        --csv data/weather_actuals_raw.csv
 """
 
 from __future__ import annotations
@@ -31,9 +23,12 @@ from typing import Any
 import pandas as pd
 import requests
 
-BASE_URL = "https://previous-runs-api.open-meteo.com/v1/forecast"
-DEFAULT_MODEL = "ecmwf_ifs"
-DEFAULT_CSV = Path("data/weather_forecasts_raw.csv")
+BASE_URL = "https://archive-api.open-meteo.com/v1/archive"
+DEFAULT_CSV = Path("data/weather_actuals_raw.csv")
+
+# Use ERA5-Seamless if available for consistency + wind/solar/temp coverage.
+# If this model name errors in your environment, remove "models" entirely or switch to "era5".
+DEFAULT_MODEL = "era5_seamless"
 
 DEFAULT_LOCATIONS = [
     {"region": "DK1_west", "latitude": 56.15, "longitude": 8.45},
@@ -43,26 +38,14 @@ DEFAULT_LOCATIONS = [
     {"region": "DE_north", "latitude": 54.30, "longitude": 9.70},
 ]
 
-BASE_VARS = [
-    "wind_speed_120m",
-    "wind_direction_120m",
+DEFAULT_HOURLY_VARS = [
+    "wind_speed_100m",
+    "wind_direction_100m",
     "shortwave_radiation",
     "cloud_cover",
     "temperature_2m",
     "pressure_msl",
 ]
-
-
-def build_hourly_vars(base_vars: list[str], max_previous_day: int = 5) -> list[str]:
-    hourly_vars: list[str] = []
-    for var in base_vars:
-        hourly_vars.append(var)
-        for d in range(1, max_previous_day + 1):
-            hourly_vars.append(f"{var}_previous_day{d}")
-    return hourly_vars
-
-
-DEFAULT_HOURLY_VARS = build_hourly_vars(BASE_VARS, max_previous_day=5)
 
 
 def month_ranges(start: date, end: date):
@@ -135,7 +118,7 @@ def fetch_records(
     start: str,
     end: str,
     *,
-    model: str = DEFAULT_MODEL,
+    model: str | None = DEFAULT_MODEL,
     hourly_vars: list[str] | None = None,
     locations: list[dict[str, Any]] | None = None,
     timezone: str = "Europe/Copenhagen",
@@ -157,7 +140,7 @@ def fetch_records(
     session.headers.update(
         {
             "Accept": "application/json",
-            "User-Agent": "fetch_weather_forecast_data.py/1.0",
+            "User-Agent": "fetch_weather_actuals_data.py/1.0",
         }
     )
 
@@ -167,18 +150,20 @@ def fetch_records(
         longitude = location["longitude"]
 
         for chunk_start, chunk_end in month_ranges(start_date, end_date):
-            params = {
+            params: dict[str, Any] = {
                 "latitude": latitude,
                 "longitude": longitude,
                 "start_date": chunk_start.isoformat(),
                 "end_date": chunk_end.isoformat(),
                 "hourly": ",".join(hourly_vars),
-                "models": model,
                 "timezone": timezone,
                 "wind_speed_unit": wind_speed_unit,
                 "temperature_unit": temperature_unit,
                 "precipitation_unit": precipitation_unit,
             }
+
+            if model:
+                params["models"] = model
 
             payload = fetch_json(session, params)
             records = response_to_records(payload, region_name)
@@ -189,6 +174,9 @@ def fetch_records(
                 f"from {chunk_start} to {chunk_end}"
             )
 
+            # Small pause to be nice to the API
+            time.sleep(0.2)
+
     return all_records
 
 
@@ -198,7 +186,23 @@ def write_csv(records: list[dict[str, Any]], output_path: Path) -> None:
     if not records:
         with output_path.open("w", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
-            writer.writerow(["TimeDK", "region"])
+            writer.writerow(
+                [
+                    "TimeDK",
+                    "region",
+                    "Latitude",
+                    "Longitude",
+                    "Elevation",
+                    "Timezone",
+                    "TimezoneAbbreviation",
+                    "wind_speed_100m",
+                    "wind_direction_100m",
+                    "shortwave_radiation",
+                    "cloud_cover",
+                    "temperature_2m",
+                    "pressure_msl",
+                ]
+            )
         return
 
     fieldnames = list(records[0].keys())
@@ -222,41 +226,29 @@ def print_summary(records: list[dict[str, Any]]) -> None:
     if "region" in df.columns:
         print("Regions:", ", ".join(sorted(df["region"].dropna().unique())))
 
-    check_cols = [
-        "wind_speed_120m",
-        "wind_speed_120m_previous_day1",
-        "wind_speed_120m_previous_day2",
-        "wind_speed_120m_previous_day3",
-        "wind_speed_120m_previous_day4",
-        "wind_speed_120m_previous_day5",
+    numeric_cols = [
+        "wind_speed_100m",
+        "wind_direction_100m",
         "shortwave_radiation",
-        "shortwave_radiation_previous_day1",
-        "shortwave_radiation_previous_day2",
-        "shortwave_radiation_previous_day3",
-        "shortwave_radiation_previous_day4",
-        "shortwave_radiation_previous_day5",
+        "cloud_cover",
         "temperature_2m",
-        "temperature_2m_previous_day1",
-        "temperature_2m_previous_day2",
-        "temperature_2m_previous_day3",
-        "temperature_2m_previous_day4",
-        "temperature_2m_previous_day5",
+        "pressure_msl",
     ]
 
     print("\nNon-missing values by selected columns:")
-    for col in check_cols:
+    for col in numeric_cols:
         if col in df.columns:
             print(f"  {col}: {df[col].notna().sum():,}")
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Fetch weather forecasts from Open-Meteo Previous Runs API."
+        description="Fetch historical actual weather data from Open-Meteo Historical Weather API."
     )
     parser.add_argument(
         "--start",
         required=True,
-        help="Start date, e.g. 2024-01-01",
+        help="Start date, e.g. 2022-01-01",
     )
     parser.add_argument(
         "--end",
@@ -266,7 +258,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--model",
         default=DEFAULT_MODEL,
-        help=f"Weather model slug (default: {DEFAULT_MODEL})",
+        help=f"Reanalysis model (default: {DEFAULT_MODEL})",
     )
     parser.add_argument(
         "--csv",
@@ -291,10 +283,11 @@ def main() -> int:
     args = parse_args()
 
     try:
+        model = args.model.strip() if args.model else None
         records = fetch_records(
             start=args.start,
             end=args.end,
-            model=args.model,
+            model=model,
         )
     except requests.HTTPError as exc:
         print(f"HTTP error: {exc}", file=sys.stderr)
