@@ -188,13 +188,14 @@ def load_prices(path_str: str, mtime: float) -> pd.DataFrame:
     if "PriceArea" in df.columns:
         df = df[df["PriceArea"].astype(str).str.strip() == PRICE_AREA].copy()
 
-    if "DayAheadPriceDKK" not in df.columns:
-        if "SpotPriceDKK" in df.columns:
-            df["DayAheadPriceDKK"] = df["SpotPriceDKK"]
-        elif "DayAheadPriceEUR" in df.columns:
-            df["DayAheadPriceDKK"] = df["DayAheadPriceEUR"] * 7.45
-        elif "SpotPriceEUR" in df.columns:
-            df["DayAheadPriceDKK"] = df["SpotPriceEUR"] * 7.45
+
+    # if "DayAheadPriceDKK" not in df.columns:
+    #     if "SpotPriceDKK" in df.columns:
+    #         df["DayAheadPriceDKK"] = df["SpotPriceDKK"]
+    #     elif "DayAheadPriceEUR" in df.columns:
+    #         df["DayAheadPriceDKK"] = df["DayAheadPriceEUR"] * 7.45
+    #     elif "SpotPriceEUR" in df.columns:
+    #         df["DayAheadPriceDKK"] = df["SpotPriceEUR"] * 7.45
 
     df = df.dropna(subset=["TimeDK", "DayAheadPriceDKK"]).copy()
     df = df.sort_values("TimeDK").drop_duplicates(subset=["TimeDK"]).reset_index(drop=True)
