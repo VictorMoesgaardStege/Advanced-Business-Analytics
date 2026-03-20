@@ -177,12 +177,12 @@ def load_prices(path_str: str, mtime: float) -> pd.DataFrame:
 
     df["TimeDK"] = _parse_datetime_column(
         df,
-        ["TimeDK", "HourDK", "DatetimeDK", "DateTime", "TimeUTC", "HourUTC"],
+        ["TimeDK"],
     )
 
     df = _coerce_numeric_columns(
         df,
-        ["DayAheadPriceDKK", "DayAheadPriceEUR", "SpotPriceDKK", "SpotPriceEUR"],
+        ["DayAheadPriceDKK"]
     )
 
     if "PriceArea" in df.columns:
