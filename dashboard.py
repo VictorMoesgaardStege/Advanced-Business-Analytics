@@ -578,7 +578,7 @@ def render_main_dashboard() -> None:
     if PRICE_FILE.exists():
         raw_prices = pd.read_csv(PRICE_FILE)
         st.write("Raw price columns:", raw_prices.columns.tolist())
-        st.dataframe(raw_prices.head(10), use_container_width=True)
+        st.text(raw_prices.head(10).to_string())
 
     daily_prices = compute_daily_price_history(prices)
     today_prices, latest_ts = get_today_hourly_prices(prices)
