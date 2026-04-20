@@ -2,7 +2,6 @@
 """Fetch historical actual weather data from Open-Meteo Historical Weather API.
 
 Example:
-
     python src/data/fetch_weather_actuals_data.py \
         --start 2022-01-01 \
         --end 2026-03-16 \
@@ -26,9 +25,8 @@ import requests
 BASE_URL = "https://archive-api.open-meteo.com/v1/archive"
 DEFAULT_CSV = Path("data/weather_actuals_raw.csv")
 
-# Use ERA5-Seamless if available for consistency + wind/solar/temp coverage.
-# If this model name errors in your environment, remove "models" entirely or switch to "era5".
-DEFAULT_MODEL = "era5_seamless"
+# Using ECMWF IFS keeps the actuals closer to the forecast model family.
+DEFAULT_MODEL = "ecmwf_ifs"
 
 DEFAULT_LOCATIONS = [
     {"region": "DK1_west", "latitude": 56.15, "longitude": 8.45},
@@ -39,6 +37,8 @@ DEFAULT_LOCATIONS = [
 ]
 
 DEFAULT_HOURLY_VARS = [
+    "wind_speed_10m",
+    "wind_direction_10m",
     "wind_speed_100m",
     "wind_direction_100m",
     "shortwave_radiation",
@@ -64,16 +64,16 @@ def month_ranges(start: date, end: date):
 
 def fetch_json(session: requests.Session, params: dict[str, Any], timeout: int = 60) -> dict[str, Any]:
     last_exc: Exception | None = None
-    for attempt in range(5):
+    for attempt in range(6):
         try:
             response = session.get(BASE_URL, params=params, timeout=timeout)
             response.raise_for_status()
             return response.json()
         except Exception as exc:
             last_exc = exc
-            sleep_seconds = 1.5 * (attempt + 1)
+            sleep_seconds = min(20, 2 ** attempt)
             print(
-                f"Request failed (attempt {attempt + 1}/5): {exc}. "
+                f"Request failed (attempt {attempt + 1}/6): {exc}. "
                 f"Retrying in {sleep_seconds:.1f}s...",
                 file=sys.stderr,
             )
@@ -85,7 +85,6 @@ def fetch_json(session: requests.Session, params: dict[str, Any], timeout: int =
 def response_to_records(payload: dict[str, Any], region_name: str) -> list[dict[str, Any]]:
     hourly = payload.get("hourly", {})
     times = hourly.get("time")
-
     if not times:
         return []
 
@@ -118,7 +117,7 @@ def fetch_records(
     start: str,
     end: str,
     *,
-    model: str | None = DEFAULT_MODEL,
+    model: str = DEFAULT_MODEL,
     hourly_vars: list[str] | None = None,
     locations: list[dict[str, Any]] | None = None,
     timezone: str = "Europe/Copenhagen",
@@ -146,24 +145,20 @@ def fetch_records(
 
     for location in locations:
         region_name = str(location["region"])
-        latitude = location["latitude"]
-        longitude = location["longitude"]
 
         for chunk_start, chunk_end in month_ranges(start_date, end_date):
-            params: dict[str, Any] = {
-                "latitude": latitude,
-                "longitude": longitude,
+            params = {
+                "latitude": location["latitude"],
+                "longitude": location["longitude"],
                 "start_date": chunk_start.isoformat(),
                 "end_date": chunk_end.isoformat(),
                 "hourly": ",".join(hourly_vars),
+                "models": model,
                 "timezone": timezone,
                 "wind_speed_unit": wind_speed_unit,
                 "temperature_unit": temperature_unit,
                 "precipitation_unit": precipitation_unit,
             }
-
-            if model:
-                params["models"] = model
 
             payload = fetch_json(session, params)
             records = response_to_records(payload, region_name)
@@ -173,8 +168,6 @@ def fetch_records(
                 f"Fetched {len(records)} row(s) for {region_name} "
                 f"from {chunk_start} to {chunk_end}"
             )
-
-            # Small pause to be nice to the API
             time.sleep(0.2)
 
     return all_records
@@ -186,23 +179,7 @@ def write_csv(records: list[dict[str, Any]], output_path: Path) -> None:
     if not records:
         with output_path.open("w", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
-            writer.writerow(
-                [
-                    "TimeDK",
-                    "region",
-                    "Latitude",
-                    "Longitude",
-                    "Elevation",
-                    "Timezone",
-                    "TimezoneAbbreviation",
-                    "wind_speed_100m",
-                    "wind_direction_100m",
-                    "shortwave_radiation",
-                    "cloud_cover",
-                    "temperature_2m",
-                    "pressure_msl",
-                ]
-            )
+            writer.writerow(["TimeDK", "region"])
         return
 
     fieldnames = list(records[0].keys())
@@ -218,64 +195,33 @@ def print_summary(records: list[dict[str, Any]]) -> None:
         return
 
     df = pd.DataFrame(records)
+    df["TimeDK"] = pd.to_datetime(df["TimeDK"], errors="coerce")
 
-    if "TimeDK" in df.columns:
-        df["TimeDK"] = pd.to_datetime(df["TimeDK"], errors="coerce")
-        print(f"Time span: {df['TimeDK'].min()} -> {df['TimeDK'].max()}")
+    print(f"Time span: {df['TimeDK'].min()} -> {df['TimeDK'].max()}")
+    print("Regions:", ", ".join(sorted(df["region"].dropna().unique())))
 
-    if "region" in df.columns:
-        print("Regions:", ", ".join(sorted(df["region"].dropna().unique())))
-
-    numeric_cols = [
+    for col in [
+        "wind_speed_10m",
+        "wind_direction_10m",
         "wind_speed_100m",
         "wind_direction_100m",
         "shortwave_radiation",
         "cloud_cover",
         "temperature_2m",
         "pressure_msl",
-    ]
-
-    print("\nNon-missing values by selected columns:")
-    for col in numeric_cols:
+    ]:
         if col in df.columns:
             print(f"  {col}: {df[col].notna().sum():,}")
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Fetch historical actual weather data from Open-Meteo Historical Weather API."
-    )
-    parser.add_argument(
-        "--start",
-        required=True,
-        help="Start date, e.g. 2022-01-01",
-    )
-    parser.add_argument(
-        "--end",
-        required=True,
-        help="End date, e.g. 2026-03-16",
-    )
-    parser.add_argument(
-        "--model",
-        default=DEFAULT_MODEL,
-        help=f"Reanalysis model (default: {DEFAULT_MODEL})",
-    )
-    parser.add_argument(
-        "--csv",
-        type=Path,
-        default=DEFAULT_CSV,
-        help=f"Write results to CSV (default: {DEFAULT_CSV})",
-    )
-    parser.add_argument(
-        "--json",
-        type=Path,
-        help="Optional JSON output path",
-    )
-    parser.add_argument(
-        "--print-records",
-        action="store_true",
-        help="Print first records as JSON to stdout",
-    )
+    parser = argparse.ArgumentParser(description="Fetch historical actual weather data.")
+    parser.add_argument("--start", required=True, help="Start date, e.g. 2022-01-01")
+    parser.add_argument("--end", required=True, help="End date, e.g. 2026-03-16")
+    parser.add_argument("--model", default=DEFAULT_MODEL, help=f"Model slug (default: {DEFAULT_MODEL})")
+    parser.add_argument("--csv", type=Path, default=DEFAULT_CSV, help=f"CSV output path (default: {DEFAULT_CSV})")
+    parser.add_argument("--json", type=Path, help="Optional JSON output path")
+    parser.add_argument("--print-records", action="store_true", help="Print first records as JSON")
     return parser.parse_args()
 
 
@@ -283,11 +229,10 @@ def main() -> int:
     args = parse_args()
 
     try:
-        model = args.model.strip() if args.model else None
         records = fetch_records(
             start=args.start,
             end=args.end,
-            model=model,
+            model=args.model,
         )
     except requests.HTTPError as exc:
         print(f"HTTP error: {exc}", file=sys.stderr)
@@ -309,10 +254,7 @@ def main() -> int:
 
     if args.json:
         args.json.parent.mkdir(parents=True, exist_ok=True)
-        args.json.write_text(
-            json.dumps(records, indent=2, ensure_ascii=False),
-            encoding="utf-8",
-        )
+        args.json.write_text(json.dumps(records, indent=2, ensure_ascii=False), encoding="utf-8")
         print(f"Saved JSON to {args.json}")
 
     if args.print_records:
