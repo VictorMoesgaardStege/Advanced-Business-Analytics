@@ -1,31 +1,31 @@
 from typing import Dict
 
 import streamlit as st
-from google import genai
+from groq import Groq
 
 
 def generate_llm_reasoning(
     prompt: str,
-    model: str = "gemini-2.0-flash",
+    model: str = "llama-3.3-70b-versatile",
 ) -> Dict[str, str]:
-    client = genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
+    client = Groq(api_key=st.secrets["GROQ_API_KEY"])
 
     try:
         print("PROMPT LENGTH:", len(prompt))
         print("PROMPT PREVIEW:", prompt[:500])
 
-        response = client.models.generate_content(
+        response = client.chat.completions.create(
             model=model,
-            contents=prompt,
+            messages=[{"role": "user", "content": prompt}],
         )
 
-        text = (response.text or "").strip()
-        print("GEMINI RAW RESPONSE:", text)
+        text = (response.choices[0].message.content or "").strip()
+        print("GROQ RAW RESPONSE:", text)
 
         return {"raw_text": text}
 
     except Exception as e:
-        print(f"GEMINI ERROR FULL: {repr(e)}")
+        print(f"GROQ ERROR FULL: {repr(e)}")
 
         return {
             "raw_text": (
@@ -33,6 +33,6 @@ def generate_llm_reasoning(
                 '"style":"recommend-neutral",'
                 '"explanation":"The AI reasoning service is temporarily unavailable.",'
                 '"actions":["Use the dashboard trend as a guide for now."],'
-                '"summary_bullets":["Gemini call failed"]}'
+                '"summary_bullets":["Groq call failed"]}'
             )
         }
