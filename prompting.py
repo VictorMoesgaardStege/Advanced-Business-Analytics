@@ -4,13 +4,11 @@ import streamlit as st
 from google import genai
 
 
-client = genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
-
-#
 def generate_llm_reasoning(
     prompt: str,
     model: str = "gemini-2.5-flash",
 ) -> Dict[str, str]:
+    client = genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
 
     try:
         print("PROMPT LENGTH:", len(prompt))
