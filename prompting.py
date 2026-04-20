@@ -6,7 +6,7 @@ from google import genai
 
 def generate_llm_reasoning(
     prompt: str,
-    model: str = "gemini-2.5-flash",
+    model: str = "gemini-1.5-flash",
 ) -> Dict[str, str]:
     client = genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
 
