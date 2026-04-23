@@ -1,28 +1,26 @@
 #!/usr/bin/env python3
-"""Simulate weather forecasts from actual weather and historical forecast errors.
+"""Simulate multi-horizon weather forecasts from actuals and forecast errors.
 
 The script uses the estimated error distributions from
 ``weather_error_distributions.csv`` to create synthetic forecast values:
 
-    simulated_forecast = actual_value + sampled_error
+    simulated_forecast_h = actual_value + sampled_error_h
 
-where ``sampled_error`` is drawn from a normal distribution with the
-historical ``mean_error`` and ``std_error`` for each weather variable and
-forecast horizon. The simulation draws the error magnitude and sign
-separately, so forecast errors can be either positive or negative.
+where ``sampled_error_h`` is drawn from the historical error distribution
+for the relevant weather variable and forecast horizon. The error summary
+CSV stores the forecast horizon in ``horizon_hours`` and the estimated error
+distribution as ``mean_error`` and ``std_error``.
 
 Outputs
 -------
 1. ``sim_weather_forecasts_and_actuals.csv``
-   Original actual weather columns plus ``<variable>_forecast`` columns.
+   Original actual weather columns plus ``<variable>_<horizon>`` columns.
 2. ``sim_weather_forecast.csv``
-   Same schema as ``weather_actuals_raw.csv``, but weather predictor columns
-   contain simulated forecast values.
+   Metadata columns plus simulated ``<variable>_<horizon>`` forecast columns.
 
 Example
 -------
 python src/data/simulate_weather_forecasts.py \
-    --horizon-hours 120 \
     --seed 42
 """
 
@@ -46,22 +44,25 @@ def load_actuals(path: Path) -> pd.DataFrame:
     df = pd.read_csv(path)
     if "TimeDK" in df.columns:
         df["TimeDK"] = pd.to_datetime(df["TimeDK"], errors="coerce")
+    df = df[df["region"] == "DK1_west"]
     return df
 
 
-def load_error_distributions(path: Path, horizon_hours: int) -> pd.DataFrame:
-    """Load error rows for one forecast horizon."""
+def load_error_distributions(path: Path, horizons: list[int] | None = None) -> pd.DataFrame:
+    """Load error rows for the selected forecast horizons."""
     df = pd.read_csv(path)
     required = {"actual_variable", "horizon_hours", "mean_error", "std_error"}
     missing = required - set(df.columns)
     if missing:
         raise ValueError(f"Error distribution file is missing columns: {sorted(missing)}")
 
-    df = df[df["horizon_hours"] == horizon_hours].copy()
+    if horizons is not None:
+        df = df[df["horizon_hours"].isin(horizons)].copy()
+
     if df.empty:
-        available = sorted(pd.read_csv(path)["horizon_hours"].dropna().unique().tolist())
+        available = sorted(pd.read_csv(path)["horizon_hours"].dropna().astype(int).unique().tolist())
         raise ValueError(
-            f"No error distributions found for horizon {horizon_hours}. "
+            f"No error distributions found for horizons {horizons}. "
             f"Available horizons: {available}"
         )
 
@@ -86,49 +87,47 @@ def apply_physical_bounds(variable: str, values: np.ndarray) -> np.ndarray:
     return values
 
 
-def sample_signed_errors(
+def sample_errors(
     rng: np.random.Generator,
     mean_error: float,
     std_error: float,
     size: int,
 ) -> np.ndarray:
-    """Sample random forecast errors with random sign and random magnitude.
-
-    The magnitude is based on the historical mean/std of the error
-    distribution. The sign is drawn independently, so each simulated forecast
-    can end up above or below the actual value.
-    """
-    magnitude = np.abs(
-        rng.normal(
-            loc=abs(mean_error),
-            scale=max(std_error, 0.0),
-            size=size,
-        )
+    """Sample random forecast errors from the estimated error distribution."""
+    return rng.normal(
+        loc=mean_error,
+        scale=max(std_error, 0.0),
+        size=size,
     )
-    sign = rng.choice([-1.0, 1.0], size=size)
-    return sign * magnitude
 
 
-def simulate_forecast_values(
+def metadata_columns(actual_df: pd.DataFrame, weather_variables: set[str]) -> list[str]:
+    """Return non-weather columns that should be copied to forecast-only output."""
+    return [col for col in actual_df.columns if col not in weather_variables]
+
+
+def simulate_forecast_columns(
     actual_df: pd.DataFrame,
     error_df: pd.DataFrame,
     seed: int,
-) -> tuple[pd.DataFrame, list[str]]:
-    """Return a forecast DataFrame with the same schema as the actual weather data."""
+) -> tuple[pd.DataFrame, pd.DataFrame, list[str]]:
+    """Return combined actual/forecast data and forecast-only data."""
     rng = np.random.default_rng(seed)
-    forecast_df = actual_df.copy()
-    simulated_variables: list[str] = []
+    combined_df = actual_df.copy()
+    forecast_columns: dict[str, np.ndarray] = {}
 
     for row in error_df.itertuples(index=False):
         variable = str(row.actual_variable)
         if variable not in actual_df.columns:
             continue
 
+        horizon_hours = int(row.horizon_hours)
+        forecast_col = f"{variable}_{horizon_hours}"
         actual_values = pd.to_numeric(actual_df[variable], errors="coerce")
         std_error = 0.0 if pd.isna(row.std_error) else float(row.std_error)
         mean_error = 0.0 if pd.isna(row.mean_error) else float(row.mean_error)
 
-        sampled_errors = sample_signed_errors(
+        sampled_errors = sample_errors(
             rng=rng,
             mean_error=mean_error,
             std_error=std_error,
@@ -137,25 +136,18 @@ def simulate_forecast_values(
         simulated_values = actual_values.to_numpy(dtype=float) + sampled_errors
         simulated_values = apply_physical_bounds(variable, simulated_values)
 
-        forecast_df[variable] = simulated_values
-        simulated_variables.append(variable)
+        combined_df[forecast_col] = simulated_values
+        forecast_columns[forecast_col] = simulated_values
 
-    if not simulated_variables:
+    if not forecast_columns:
         raise ValueError("No actual weather columns matched the error distribution variables.")
 
-    return forecast_df, simulated_variables
+    weather_variables = set(error_df["actual_variable"].astype(str))
+    forecast_df = actual_df[metadata_columns(actual_df, weather_variables)].copy()
+    for col, values in forecast_columns.items():
+        forecast_df[col] = values
 
-
-def build_actuals_and_forecasts_df(
-    actual_df: pd.DataFrame,
-    forecast_df: pd.DataFrame,
-    simulated_variables: list[str],
-) -> pd.DataFrame:
-    """Combine actual weather columns with matching ``_forecast`` columns."""
-    combined = actual_df.copy()
-    for variable in simulated_variables:
-        combined[f"{variable}_forecast"] = forecast_df[variable]
-    return combined
+    return combined_df, forecast_df, list(forecast_columns.keys())
 
 
 def write_outputs(
@@ -198,13 +190,14 @@ def parse_args() -> argparse.Namespace:
         "--forecast-csv",
         type=Path,
         default=DEFAULT_FORECAST_CSV,
-        help="Output CSV with the same columns as the actual weather CSV, containing simulated forecasts.",
+        help="Output CSV with metadata columns and simulated <variable>_<horizon> forecasts.",
     )
     parser.add_argument(
-        "--horizon-hours",
+        "--horizons",
         type=int,
-        default=120,
-        help="Forecast horizon to simulate from the error distribution file. Default is 120 hours / 5 days.",
+        nargs="*",
+        default=None,
+        help="Forecast horizons to simulate. Defaults to all horizons in the error distribution file.",
     )
     parser.add_argument(
         "--seed",
@@ -219,16 +212,11 @@ def main() -> int:
     args = parse_args()
 
     actual_df = load_actuals(args.actual_csv)
-    error_df = load_error_distributions(args.error_csv, args.horizon_hours)
-    forecast_df, simulated_variables = simulate_forecast_values(
+    error_df = load_error_distributions(args.error_csv, args.horizons)
+    actuals_and_forecasts_df, forecast_df, forecast_columns = simulate_forecast_columns(
         actual_df=actual_df,
         error_df=error_df,
         seed=args.seed,
-    )
-    actuals_and_forecasts_df = build_actuals_and_forecasts_df(
-        actual_df=actual_df,
-        forecast_df=forecast_df,
-        simulated_variables=simulated_variables,
     )
 
     write_outputs(
@@ -238,9 +226,10 @@ def main() -> int:
         forecast_csv=args.forecast_csv,
     )
 
-    print(f"Simulated horizon: {args.horizon_hours} hours")
+    horizons = sorted(error_df["horizon_hours"].astype(int).unique().tolist())
+    print(f"Simulated horizons: {', '.join(str(h) for h in horizons)} hours")
     print(f"Rows: {len(actual_df):,}")
-    print(f"Variables simulated: {', '.join(simulated_variables)}")
+    print(f"Forecast columns generated: {len(forecast_columns)}")
     print(f"Saved actuals + forecasts to {args.actuals_and_forecasts_csv}")
     print(f"Saved forecasts only to {args.forecast_csv}")
 

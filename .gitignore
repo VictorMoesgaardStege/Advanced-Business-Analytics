@@ -20,8 +20,8 @@ env/
 models/
 
 # Data files (can be large; users fetch their own)
-data/**
-!data/.gitkeep
+processed_data/*.csv
+data/*.parquet
 
 # Environment
 .env
