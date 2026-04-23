@@ -1,0 +1,4 @@
+scenario,total_shifted_energy_mwh,share_of_load_shifted_pct,baseline_peak_mw,shifted_peak_mw,peak_reduction_pct,baseline_cost_dkk_k,shifted_cost_dkk_k,user_savings_dkk_k,savings_pct,stress_threshold_dkk_mwh,stress_load_reduced_mwh,stress_reduction_pct,avg_wait_hours,n_shifting_hours
+conservative,11228.1,0.33,4138.4,4123.9,0.35,2484840.0,2482155.0,2685.0,0.11,1174.5,2081.7,1.12,8.7,1057
+medium,55333.0,1.64,4138.4,5729.7,-38.45,2484840.0,2470174.0,14666.0,0.59,1174.5,9410.2,5.04,11.97,1057
+optimistic,168811.5,5.01,4138.4,10957.2,-164.77,2484840.0,2437574.0,47266.0,1.9,1174.5,25830.1,13.84,17.07,1057
