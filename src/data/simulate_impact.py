@@ -1,15 +1,8 @@
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-
-
-from pathlib import Path
-import pandas as pd
-import numpy as np
-
-from pathlib import Path
-import pandas as pd
-import numpy as np
 
 
 def load_daily_system_consumption(
@@ -262,66 +255,71 @@ def simulate_daily_shift(
     return df, summary
 
 
-# -----------------------------
-# RUN SIMULATION
-# -----------------------------
-df, summary = simulate_daily_shift(
-    n_days=60,
-    lookahead_days=5,
-    model="logistic",
-)
+def plot_shift_results(df):
+    """Create the three main figures used to explain the shift simulation."""
+    green_dark = "#1B5E20"
+    green_mid = "#43A047"
+    green_light = "#A5D6A7"
+    green_fill = "#E8F5E9"
 
-print("SUMMARY")
-for k, v in summary.items():
-    if isinstance(v, float):
-        print(f"{k}: {v:,.2f}")
-    else:
-        print(f"{k}: {v}")
+    fig, axes = plt.subplots(3, 1, figsize=(12, 13))
 
+    axes[0].plot(
+        df["date"],
+        df["system_daily_energy_baseline_mwh"],
+        color=green_light,
+        linewidth=2,
+        label="Baseline",
+    )
+    axes[0].plot(
+        df["date"],
+        df["system_daily_energy_shifted_mwh"],
+        color=green_dark,
+        linewidth=2,
+        label="After tool",
+    )
+    axes[0].set_title("Daily system energy before and after shifting")
+    axes[0].set_ylabel("Energy [MWh/day]")
+    axes[0].grid(alpha=0.25)
+    axes[0].legend()
 
-# -----------------------------
-# PLOTS
-# -----------------------------
-green_dark = "#1B5E20"
-green_mid = "#43A047"
-green_light = "#A5D6A7"
-green_fill = "#E8F5E9"
+    axes[1].bar(df["date"], df["shifted_out_mwh"], color=green_mid)
+    axes[1].set_title("Energy moved away from each day")
+    axes[1].set_ylabel("Shifted energy [MWh]")
+    axes[1].grid(axis="y", alpha=0.25)
 
+    spreads = np.linspace(0, 1.5, 200)
+    response = 0.33 * 0.70 * (1.0 / (1.0 + np.exp(-4.0 * (spreads - 0.60))))
+    axes[2].plot(spreads, 100 * response, color=green_dark, linewidth=3)
+    axes[2].fill_between(spreads, 0, 100 * response, color=green_fill)
+    axes[2].set_title("Illustrative household response curve")
+    axes[2].set_xlabel("Today's price minus cheapest coming-day forecast [DKK/kWh]")
+    axes[2].set_ylabel("Shifted share of flexible household load [%]")
+    axes[2].grid(alpha=0.25)
 
-# 2. Daily system energy before and after shifting
-plt.figure(figsize=(12, 5))
-plt.plot(df["date"], df["system_daily_energy_baseline_mwh"], color=green_light, linewidth=2, label="Baseline")
-plt.plot(df["date"], df["system_daily_energy_shifted_mwh"], color=green_dark, linewidth=2, label="After tool")
-plt.title("Daily system energy before and after shifting")
-plt.ylabel("Energy [MWh/day]")
-plt.grid(alpha=0.25)
-plt.legend()
-plt.tight_layout()
-plt.show()
-
-# 3. Shifted energy per day
-plt.figure(figsize=(12, 5))
-plt.bar(df["date"], df["shifted_out_mwh"], color=green_mid)
-plt.title("Energy moved away from each day")
-plt.ylabel("Shifted energy [MWh]")
-plt.grid(axis="y", alpha=0.25)
-plt.tight_layout()
-plt.show()
-
-# 4. Logistic response curve
-spreads = np.linspace(0, 1.5, 200)
-response = 0.33 * 0.70 * (1.0 / (1.0 + np.exp(-4.0 * (spreads - 0.60))))
-
-plt.figure(figsize=(10, 5))
-plt.plot(spreads, 100 * response, color=green_dark, linewidth=3)
-plt.fill_between(spreads, 0, 100 * response, color=green_fill)
-plt.title("Illustrative household response curve")
-plt.xlabel("Today's price minus cheapest coming-day forecast [DKK/kWh]")
-plt.ylabel("Shifted share of flexible household load [%]")
-plt.grid(alpha=0.25)
-plt.tight_layout()
-plt.show()
+    fig.tight_layout()
+    return fig
 
 
-# Optional: save results
-df.to_csv("data/figures/daily_energy_shift_results.csv", index=False)
+def run_simulation_demo(save_outputs=False):
+    """Run the default logistic shift simulation and optionally save the results."""
+    df, summary = simulate_daily_shift(n_days=60, lookahead_days=5, model="logistic")
+    fig = plot_shift_results(df)
+
+    if save_outputs:
+        output_dir = Path(__file__).resolve().parents[2] / "data" / "figures"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        df.to_csv(output_dir / "daily_energy_shift_results.csv", index=False)
+
+    return df, summary, fig
+
+
+if __name__ == "__main__":
+    demo_df, demo_summary, _ = run_simulation_demo(save_outputs=True)
+    print("SUMMARY")
+    for key, value in demo_summary.items():
+        if isinstance(value, float):
+            print(f"{key}: {value:,.2f}")
+        else:
+            print(f"{key}: {value}")
+    plt.show()
