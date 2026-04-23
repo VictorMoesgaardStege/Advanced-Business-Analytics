@@ -35,8 +35,8 @@ import pandas as pd
 
 DEFAULT_ACTUAL_CSV = Path("data/weather_actuals_raw.csv")
 DEFAULT_ERROR_CSV = Path("data/weather_error_distributions.csv")
-DEFAULT_ACTUALS_AND_FORECASTS_CSV = Path("data/sim_weather_forecasts_and_actuals.csv")
-DEFAULT_FORECAST_CSV = Path("data/sim_weather_forecast.csv")
+DEFAULT_ACTUALS_AND_FORECASTS_CSV = Path("processed_data/sim_weather_forecasts_and_actuals.csv")
+DEFAULT_FORECAST_CSV = Path("processed_data/sim_weather_forecast.csv")
 
 
 def load_actuals(path: Path) -> pd.DataFrame:
