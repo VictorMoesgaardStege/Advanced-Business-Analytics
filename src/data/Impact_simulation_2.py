@@ -36,11 +36,41 @@ SIMULATION_DAYS   = 45           # how many hours of the available data to use
 FORECAST_HORIZON  = 5 * 24      # hours the app looks ahead (5 days)
 STRESS_PERCENTILE = 95           # top X% prices define "stress hours"
 OUTPUT_DIR        = Path("simulation_outputs")
+MAX_SHIFT_IN_MW   = 200         # hard cap: no single hour may receive more than this via shifting
+
+# Time-of-day shiftability: fraction of total demand that is physically
+# shiftable in each time slot. Acts as a hard ceiling on max_movable
+# regardless of price incentives or flexibility category.
+TIMESLOT_SHIFTABILITY = {
+    (0,  6):  0.60,   # 00:00-05:59  night / early morning
+    (6,  9):  0.30,   # 06:00-08:59  morning peak
+    (9,  16): 0.50,   # 09:00-15:59  daytime
+    (16, 21): 0.15,   # 16:00-20:59  evening peak
+    (21, 24): 0.40,   # 21:00-23:59  late evening
+}
+
+
+def get_timeslot_factor(hour: int) -> float:
+    """Return the shiftability fraction for a given hour of day (0-23)."""
+    for (h_start, h_end), factor in TIMESLOT_SHIFTABILITY.items():
+        if h_start <= hour < h_end:
+            return factor
+    return 1.0
 
 # Paths to the same raw data files used by simulate_impact.py
 _DATA_DIR         = Path(__file__).resolve().parents[2] / "data"
 CONSUMPTION_CSV   = _DATA_DIR / "consumption_dk1_raw.csv"
 PRICES_CSV        = _DATA_DIR / "day_ahead_prices_dk1_raw.csv"
+_PREDS_PATH       = Path(__file__).resolve().parents[2] / "outputs" / "model" / "predictions.parquet"
+
+# Background shading colour per timeslot (used in weekly-shift plot)
+TIMESLOT_COLORS = {
+    (0,  6):  "#cce5ff",
+    (6,  9):  "#ffe0b2",
+    (9,  16): "#e8f5e9",
+    (16, 21): "#fce4ec",
+    (21, 24): "#ede7f6",
+}
 
 
 # -----------------------------------------------------------------------------
@@ -87,14 +117,52 @@ def generate_forecast_prices(
     actual: pd.Series,
     noise_std: float = 55.0,
 ) -> pd.Series:
-    """
-    Creates synthetic forecasted prices from actual prices + Gaussian noise.
-    Noise std=55 DKK/MWh matches simulate_impact.py's daily forecast error.
-    Replace with model predictions from your forecasting pipeline.
-    """
+    """Naive baseline forecast: actual + Gaussian noise."""
     noise    = np.random.normal(0, noise_std, len(actual))
     forecast = (actual.values + noise).clip(min=0)
     return pd.Series(forecast, index=actual.index, name="forecast_price_dkk_mwh")
+
+
+def load_xgboost_forecast_prices(
+    timestamps: pd.DatetimeIndex,
+    actual_prices: pd.Series,
+) -> pd.Series:
+    """
+    Loads XGBoost walk-forward predictions (EUR/MWh), converts to DKK using
+    the median EUR→DKK ratio from the actual price file, and aligns to the
+    simulation timestamps.  For hours not covered by the predictions file
+    (gaps or out-of-sample), falls back to actual + small noise.
+
+    Returns None if the predictions file is missing.
+    """
+    if not _PREDS_PATH.exists():
+        print("  XGBoost predictions not found — falling back to naive forecast")
+        return None
+
+    # EUR→DKK conversion from actual price data
+    raw        = pd.read_csv(PRICES_CSV, parse_dates=["TimeDK"]).set_index("TimeDK").sort_index()
+    hourly_eur = raw["DayAheadPriceEUR"].resample("h").mean()
+    hourly_dkk = raw["DayAheadPriceDKK"].resample("h").mean()
+    eur_to_dkk = (hourly_dkk / hourly_eur.replace(0, np.nan)).median()
+
+    preds = pd.read_parquet(_PREDS_PATH)
+
+    # For each target_time take the shortest-horizon prediction (freshest forecast)
+    best = (
+        preds.sort_values("horizon_h")
+        .groupby("target_time")["predicted"]
+        .first()
+        * eur_to_dkk
+    )
+    best.name = "forecast_price_dkk_mwh"
+
+    aligned = best.reindex(timestamps)
+    missing = aligned.isna()
+    if missing.any():
+        noise = np.random.normal(0, 30, missing.sum())
+        aligned[missing] = (actual_prices[missing].values + noise).clip(min=0)
+
+    return aligned.clip(lower=0)
 
 
 # -----------------------------------------------------------------------------
@@ -123,51 +191,51 @@ def define_scenarios() -> dict:
             "short_flex": dict(
                 share_of_load=0.06, max_movable=0.25,
                 max_wait_hours=windows["short_flex"],
-                decay_rate=0.60, price_sensitivity=0.40,
+                decay_rate=0.30, price_sensitivity=0.40,
             ),
             "day_flex": dict(
                 share_of_load=0.08, max_movable=0.30,
                 max_wait_hours=windows["day_flex"],
-                decay_rate=0.18, price_sensitivity=0.45,
+                decay_rate=0.09, price_sensitivity=0.45,
             ),
             "multi_day_flex": dict(
                 share_of_load=0.04, max_movable=0.20,
                 max_wait_hours=windows["multi_day_flex"],
-                decay_rate=0.04, price_sensitivity=0.35,
+                decay_rate=0.02, price_sensitivity=0.35,
             ),
         },
         "medium": {
             "short_flex": dict(
                 share_of_load=0.10, max_movable=0.40,
                 max_wait_hours=windows["short_flex"],
-                decay_rate=0.40, price_sensitivity=0.60,
+                decay_rate=0.20, price_sensitivity=0.60,
             ),
             "day_flex": dict(
                 share_of_load=0.12, max_movable=0.45,
                 max_wait_hours=windows["day_flex"],
-                decay_rate=0.12, price_sensitivity=0.65,
+                decay_rate=0.06, price_sensitivity=0.65,
             ),
             "multi_day_flex": dict(
                 share_of_load=0.08, max_movable=0.35,
                 max_wait_hours=windows["multi_day_flex"],
-                decay_rate=0.025, price_sensitivity=0.55,
+                decay_rate=0.012, price_sensitivity=0.55,
             ),
         },
         "optimistic": {
             "short_flex": dict(
                 share_of_load=0.14, max_movable=0.55,
                 max_wait_hours=windows["short_flex"],
-                decay_rate=0.25, price_sensitivity=0.80,
+                decay_rate=0.12, price_sensitivity=0.80,
             ),
             "day_flex": dict(
                 share_of_load=0.16, max_movable=0.60,
                 max_wait_hours=windows["day_flex"],
-                decay_rate=0.07, price_sensitivity=0.85,
+                decay_rate=0.035, price_sensitivity=0.85,
             ),
             "multi_day_flex": dict(
                 share_of_load=0.12, max_movable=0.50,
                 max_wait_hours=windows["multi_day_flex"],
-                decay_rate=0.015, price_sensitivity=0.70,
+                decay_rate=0.008, price_sensitivity=0.70,
             ),
         },
     }
@@ -275,21 +343,25 @@ def run_simulation(
     total_flex_share = sum(p["share_of_load"] for p in scenario_params.values())
     inflexible_share = max(0.0, 1.0 - total_flex_share)
 
-    shifted_out    = np.zeros(n)
-    shifted_in     = np.zeros(n)
-    target_hours   = np.full(n, -1, dtype=int)
-    wait_hours_arr = np.zeros(n)
-    shift_scores   = np.zeros(n)
+    shifted_out        = np.zeros(n)
+    shifted_in         = np.zeros(n)
+    target_hours       = np.full(n, -1, dtype=int)
+    wait_hours_arr     = np.zeros(n)
+    shift_scores       = np.zeros(n)
+    timeslot_factors   = np.zeros(n)
 
     cat_shift_out  = {cat: np.zeros(n) for cat in scenario_params}
 
     for t in range(n):
-        current_price = actual[t]
-        hour_load     = load[t]
+        current_price    = actual[t]
+        hour_load        = load[t]
+        timeslot_factor  = get_timeslot_factor(timestamps[t].hour)
+        timeslot_factors[t] = timeslot_factor
 
         for cat, params in scenario_params.items():
             cat_load = hour_load * params["share_of_load"]
-            max_move = cat_load  * params["max_movable"]
+            # Apply timeslot shiftability as a physical ceiling on max_movable
+            max_move = cat_load * params["max_movable"] * timeslot_factor
 
             if max_move < 1e-6:
                 continue
@@ -308,6 +380,13 @@ def run_simulation(
             if amount_shifted < 1e-6:
                 continue
 
+            # Hard cap: do not push the target hour above MAX_SHIFT_IN_MW
+            headroom       = max(0.0, MAX_SHIFT_IN_MW - shifted_in[best_idx])
+            amount_shifted = min(amount_shifted, headroom)
+
+            if amount_shifted < 1e-6:
+                continue
+
             cat_shift_out[cat][t] += amount_shifted
             shifted_out[t]        += amount_shifted
             shifted_in[best_idx]  += amount_shifted
@@ -322,18 +401,19 @@ def run_simulation(
     shifted_total = load - shifted_out + shifted_in
 
     result = pd.DataFrame({
-        "timestamp"          : timestamps,
-        "scenario"           : scenario_name,
-        "actual_price"       : actual,
-        "forecast_price"     : forecast,
-        "baseline_load"      : load,
-        "inflexible_load"    : load * inflexible_share,
-        "shifted_out"        : shifted_out,
-        "shifted_in"         : shifted_in,
-        "shifted_total_load" : shifted_total,
-        "target_hour_idx"    : target_hours,
-        "wait_hours"         : wait_hours_arr,
-        "shift_score"        : shift_scores,
+        "timestamp"           : timestamps,
+        "scenario"            : scenario_name,
+        "actual_price"        : actual,
+        "forecast_price"      : forecast,
+        "baseline_load"       : load,
+        "inflexible_load"     : load * inflexible_share,
+        "shifted_out"         : shifted_out,
+        "shifted_in"          : shifted_in,
+        "shifted_total_load"  : shifted_total,
+        "target_hour_idx"     : target_hours,
+        "wait_hours"          : wait_hours_arr,
+        "shift_score"         : shift_scores,
+        "timeslot_shiftability": timeslot_factors,
     })
 
     for cat, arr in cat_shift_out.items():
@@ -436,24 +516,39 @@ def plot_prices(result_df: pd.DataFrame) -> plt.Figure:
 
 
 def plot_load_comparison(all_results: dict) -> plt.Figure:
-    """Plot 2 — Baseline vs shifted total load for each scenario."""
-    n_sc  = len(all_results)
-    fig, axes = plt.subplots(n_sc, 1, figsize=(14, 4 * n_sc), sharex=True)
-    if n_sc == 1:
-        axes = [axes]
-    for ax, (name, df) in zip(axes, all_results.items()):
-        ax.plot(df["timestamp"], df["baseline_load"],
-                label="Baseline", lw=1.0, color=COLORS["baseline"], alpha=0.8)
-        ax.plot(df["timestamp"], df["shifted_total_load"],
-                label="Shifted", lw=1.0, color=COLORS[name])
-        ax.fill_between(df["timestamp"],
-                        df["baseline_load"], df["shifted_total_load"],
-                        alpha=0.2, color=COLORS[name])
-        ax.set_title(f"Baseline vs Shifted Load — {name.capitalize()}",
-                     fontsize=12, fontweight="bold")
-        ax.set_ylabel("MW")
-        ax.legend(loc="upper right")
-        _fmt_date_axis(ax)
+    """Plot 2 — Baseline vs shifted total load (top) and net shift (bottom) per scenario."""
+    n_sc = len(all_results)
+    fig, axes = plt.subplots(n_sc * 2, 1, figsize=(14, 5 * n_sc), sharex=True)
+    if n_sc * 2 == 2:
+        axes = list(axes)
+
+    for i, (name, df) in enumerate(all_results.items()):
+        ax_load = axes[i * 2]
+        ax_diff = axes[i * 2 + 1]
+
+        # ── load panel ────────────────────────────────────────────────────────
+        ax_load.plot(df["timestamp"], df["baseline_load"],
+                     label="Baseline", lw=1.0, color=COLORS["baseline"], alpha=0.8)
+        ax_load.plot(df["timestamp"], df["shifted_total_load"],
+                     label="Shifted", lw=1.0, color=COLORS[name])
+        ax_load.fill_between(df["timestamp"],
+                             df["baseline_load"], df["shifted_total_load"],
+                             alpha=0.2, color=COLORS[name])
+        ax_load.set_title(f"Baseline vs Shifted Load — {name.capitalize()}",
+                          fontsize=11, fontweight="bold")
+        ax_load.set_ylabel("MW")
+        ax_load.legend(loc="upper right", fontsize=8)
+
+        # ── net shift panel ───────────────────────────────────────────────────
+        net = df["shifted_in"] - df["shifted_out"]
+        colors = [COLORS["optimistic"] if v >= 0 else COLORS["stress"] for v in net]
+        ax_diff.bar(df["timestamp"], net, width=0.04, color=colors, alpha=0.85)
+        ax_diff.axhline(0, color="black", lw=0.6)
+        ax_diff.set_ylabel("Net shift (MW)\n(+in / -out)")
+        ax_diff.set_title(f"Net shift per hour — {name.capitalize()}",
+                          fontsize=10)
+        _fmt_date_axis(ax_diff)
+
     plt.tight_layout()
     return fig
 
@@ -533,9 +628,9 @@ def plot_waiting_decay_function() -> plt.Figure:
     hours = np.linspace(0, 120, 500)
     fig, ax = plt.subplots(figsize=(9, 4))
     for label, lam, color in [
-        ("Low aversion  λ=0.015", 0.015, COLORS["optimistic"]),
-        ("Medium aversion λ=0.12", 0.12,  COLORS["medium"]),
-        ("High aversion  λ=0.40", 0.40,  COLORS["conservative"]),
+        ("Low aversion  λ=0.008", 0.008, COLORS["optimistic"]),
+        ("Medium aversion λ=0.06", 0.06,  COLORS["medium"]),
+        ("High aversion  λ=0.30", 0.30,  COLORS["conservative"]),
     ]:
         ax.plot(hours, np.exp(-lam * hours), label=label, color=color, lw=2)
     ax.axvline(24,  ls="--", color="grey", lw=0.8, alpha=0.7)
@@ -619,6 +714,214 @@ def plot_hourly_heatmap(result_df: pd.DataFrame, col: str, title: str) -> plt.Fi
     return fig
 
 
+def plot_weekly_shift_pattern(result_df: pd.DataFrame, scenario_name: str) -> plt.Figure:
+    """
+    One full week (first 7 days with data).
+    Top panel  : baseline vs shifted load with timeslot background shading.
+    Bottom panel: net shift bars (shifted_in - shifted_out) + price (secondary axis).
+    """
+    week = result_df.iloc[:168].copy()
+    week["net_shift"] = week["shifted_in"] - week["shifted_out"]
+
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(16, 8), sharex=True)
+
+    # ── timeslot shading (both panels) ───────────────────────────────────────
+    for ax in (ax1, ax2):
+        for ts in week["timestamp"]:
+            h = ts.hour
+            for (h0, h1), col in TIMESLOT_COLORS.items():
+                if h0 <= h < h1:
+                    ax.axvspan(ts, ts + pd.Timedelta(hours=1),
+                               color=col, alpha=0.25, linewidth=0)
+                    break
+
+    # ── top: load ─────────────────────────────────────────────────────────────
+    ax1.plot(week["timestamp"], week["baseline_load"],
+             color=COLORS["baseline"], lw=1.2, label="Baseline load", alpha=0.85)
+    ax1.plot(week["timestamp"], week["shifted_total_load"],
+             color=COLORS[scenario_name], lw=1.2, label="Shifted load")
+    ax1.fill_between(week["timestamp"],
+                     week["baseline_load"], week["shifted_total_load"],
+                     alpha=0.20, color=COLORS[scenario_name])
+    ax1.set_ylabel("MW")
+    ax1.set_title(
+        f"Weekly demand shift — {scenario_name.capitalize()}\n"
+        "Background shading = timeslot shiftability  "
+        "(blue=36% / orange=17% / green=31% / pink=13% / purple=28%)",
+        fontsize=11, fontweight="bold",
+    )
+    ax1.legend(loc="upper right")
+
+    # ── bottom: net shift + price ─────────────────────────────────────────────
+    bar_colors = [COLORS["optimistic"] if v >= 0 else COLORS["stress"]
+                  for v in week["net_shift"]]
+    ax2.bar(week["timestamp"], week["net_shift"],
+            width=0.04, color=bar_colors, alpha=0.85, label="Net shift (in − out)")
+    ax2.axhline(0, color="black", lw=0.6)
+    ax2.set_ylabel("Net shift (MW)")
+
+    ax_p = ax2.twinx()
+    ax_p.plot(week["timestamp"], week["actual_price"],
+              color="#264653", lw=1.0, alpha=0.7, label="Price")
+    ax_p.set_ylabel("DKK/MWh")
+
+    lines1, labels1 = ax2.get_legend_handles_labels()
+    lines2, labels2 = ax_p.get_legend_handles_labels()
+    ax2.legend(lines1 + lines2, labels1 + labels2, loc="upper right", fontsize=8)
+
+    _fmt_date_axis(ax2)
+    plt.tight_layout()
+    return fig
+
+
+def plot_shift_by_hour_of_day(all_results: dict) -> plt.Figure:
+    """
+    Average shifted_out and shifted_in by hour of day (0-23) for each scenario.
+    Secondary axis shows the timeslot shiftability step function.
+    """
+    hours = np.arange(24)
+    n_sc  = len(all_results)
+    width = 0.25
+
+    fig, ax = plt.subplots(figsize=(14, 5))
+
+    for i, (name, df) in enumerate(all_results.items()):
+        df = df.copy()
+        df["hour"] = pd.to_datetime(df["timestamp"]).dt.hour
+        by_hour    = df.groupby("hour")[["shifted_out", "shifted_in"]].mean()
+
+        offset = (i - 1) * width
+        ax.bar(hours + offset, by_hour["shifted_out"],
+               width=width, alpha=0.8, color=COLORS[name],
+               label=f"{name.capitalize()} out")
+        ax.bar(hours + offset, -by_hour["shifted_in"],
+               width=width, alpha=0.4, color=COLORS[name],
+               label=f"{name.capitalize()} in")
+
+    ax.axhline(0, color="black", lw=0.6)
+    ax.set_xlabel("Hour of day")
+    ax.set_ylabel("Average MW  (positive = shifted out,  negative = shifted in)")
+    ax.set_xticks(hours)
+    ax.set_title("Average demand shift by hour of day", fontsize=12, fontweight="bold")
+
+    # Timeslot shiftability on secondary axis
+    ax2 = ax.twinx()
+    step_h      = []
+    step_factor = []
+    for (h0, h1), f in TIMESLOT_SHIFTABILITY.items():
+        step_h      += [h0, h1]
+        step_factor += [f, f]
+    ax2.step(step_h[:-1], step_factor[:-1], where="post",
+             color="black", lw=2, linestyle="--", alpha=0.6,
+             label="Timeslot shiftability")
+    ax2.set_ylabel("Shiftability fraction", color="black")
+    ax2.set_ylim(0, 0.6)
+
+    lines1, labels1 = ax.get_legend_handles_labels()
+    lines2, labels2 = ax2.get_legend_handles_labels()
+    ax.legend(lines1 + lines2, labels1 + labels2,
+              loc="upper left", fontsize=7, ncol=4)
+    plt.tight_layout()
+    return fig
+
+
+def plot_xgboost_vs_naive(kpis_xgb: list, kpis_naive: list) -> plt.Figure:
+    """
+    Side-by-side bar chart comparing KPIs between XGBoost and naive forecasts
+    for the medium scenario.
+    """
+    xgb   = {k["scenario"]: k for k in kpis_xgb}
+    naive = {k["scenario"]: k for k in kpis_naive}
+
+    metrics = [
+        ("total_shifted_energy_mwh", "Shifted Energy (MWh)"),
+        ("peak_reduction_pct",        "Peak Reduction (%)"),
+        ("stress_reduction_pct",      "Stress-Hour\nReduction (%)"),
+        ("savings_pct",               "User Savings (%)"),
+        ("avg_wait_hours",            "Avg Wait (hours)"),
+    ]
+
+    scenarios = list(xgb.keys())
+    x         = np.arange(len(scenarios))
+    bar_w     = 0.35
+
+    fig, axes = plt.subplots(1, len(metrics), figsize=(18, 5))
+    for ax, (col, title) in zip(axes, metrics):
+        xgb_vals   = [xgb[s][col]   for s in scenarios]
+        naive_vals = [naive[s][col] for s in scenarios]
+
+        b1 = ax.bar(x - bar_w / 2, xgb_vals,   bar_w,
+                    color="#2196F3", alpha=0.85, label="XGBoost forecast")
+        b2 = ax.bar(x + bar_w / 2, naive_vals, bar_w,
+                    color="#9E9E9E", alpha=0.85, label="Naive (random noise)")
+
+        ax.bar_label(b1, fmt="%.1f", fontsize=7, padding=2)
+        ax.bar_label(b2, fmt="%.1f", fontsize=7, padding=2)
+        ax.set_title(title, fontsize=10, fontweight="bold")
+        ax.set_xticks(x)
+        ax.set_xticklabels([s.capitalize() for s in scenarios], rotation=15, fontsize=8)
+        upper = max(max(xgb_vals), max(naive_vals)) * 1.3 or 1
+        ax.set_ylim(0, upper)
+
+    axes[0].legend(fontsize=8)
+    fig.suptitle("XGBoost forecast vs naive forecast — impact on shifting behaviour",
+                 fontsize=12, fontweight="bold")
+    plt.tight_layout()
+    return fig
+
+
+def plot_one_week_detail(result_df: pd.DataFrame, scenario_name: str) -> plt.Figure:
+    """
+    Three-panel view of a single week:
+      Top    : baseline vs shifted load (line) + shifted_in cap annotation
+      Middle : shifted_in (green, +) and shifted_out (red, −) bars per hour
+      Bottom : electricity price with the 50 MW cap shown as a reference line
+    """
+    week = result_df.iloc[:168].copy()
+
+    fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(16, 10), sharex=True)
+    ts = week["timestamp"]
+
+    # ── top: load ────────────────────────────────────────────────────────────
+    ax1.plot(ts, week["baseline_load"],
+             color=COLORS["baseline"], lw=1.4, label="Baseline load", alpha=0.85)
+    ax1.plot(ts, week["shifted_total_load"],
+             color=COLORS[scenario_name], lw=1.4, label="Shifted load")
+    ax1.fill_between(ts, week["baseline_load"], week["shifted_total_load"],
+                     alpha=0.18, color=COLORS[scenario_name])
+    ax1.set_ylabel("MW")
+    ax1.set_title(
+        f"One-week demand shift detail — {scenario_name.capitalize()}  "
+        f"(cap: {MAX_SHIFT_IN_MW} MW per hour)",
+        fontsize=12, fontweight="bold",
+    )
+    ax1.legend(loc="upper right")
+
+    # ── middle: shifted out / in bars ────────────────────────────────────────
+    ax2.bar(ts, -week["shifted_out"],
+            width=0.04, color=COLORS["stress"],     alpha=0.85, label="Shifted out (−)")
+    ax2.bar(ts,  week["shifted_in"],
+            width=0.04, color=COLORS["optimistic"], alpha=0.85, label="Shifted in (+)")
+    ax2.axhline( MAX_SHIFT_IN_MW, color="black", lw=1.2, linestyle="--",
+                label=f"Cap ({MAX_SHIFT_IN_MW} MW)")
+    ax2.axhline(-MAX_SHIFT_IN_MW, color="black", lw=0.7, linestyle=":", alpha=0.4)
+    ax2.set_ylabel("MW")
+    ax2.legend(loc="upper right", fontsize=8)
+
+    # ── bottom: price ─────────────────────────────────────────────────────────
+    ax3.plot(ts, week["actual_price"],
+             color="#264653", lw=1.2, label="Actual price")
+    ax3.plot(ts, week["forecast_price"],
+             color="#e9c46a", lw=1.0, linestyle="--", alpha=0.8, label="Forecast price")
+    ax3.set_ylabel("DKK/MWh")
+    ax3.set_xlabel("Date")
+    ax3.legend(loc="upper right", fontsize=8)
+
+    _fmt_date_axis(ax3)
+    plt.tight_layout()
+    return fig
+
+
 # -----------------------------------------------------------------------------
 # 7. REPORTING
 # -----------------------------------------------------------------------------
@@ -687,17 +990,23 @@ def print_narrative_summary(kpi_list: list) -> None:
 def main():
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    # -- Load real data (same sources as simulate_impact.py) ----------------
+    # -- Load real data -------------------------------------------------------
     n_hours = SIMULATION_DAYS * 24
     print(f"Loading real DK1 data ({n_hours} hours) …")
-    actual_prices   = load_real_prices(n_hours)
-    timestamps      = actual_prices.index
-    baseline_load   = load_real_baseline_load(timestamps)
-    forecast_prices = generate_forecast_prices(actual_prices)
+    actual_prices  = load_real_prices(n_hours)
+    timestamps     = actual_prices.index
+    baseline_load  = load_real_baseline_load(timestamps)
+
+    # -- Forecasts: try XGBoost first, fall back to naive --------------------
+    xgb_forecast   = load_xgboost_forecast_prices(timestamps, actual_prices)
+    naive_forecast = generate_forecast_prices(actual_prices)
+    use_xgb        = xgb_forecast is not None
+    forecast_prices = xgb_forecast if use_xgb else naive_forecast
+    print(f"  Forecast source: {'XGBoost model' if use_xgb else 'naive (random noise)'}")
 
     scenarios = define_scenarios()
 
-    # -- Run simulations ----------------------------------------------------
+    # -- Run simulations (XGBoost forecast) -----------------------------------
     all_results: dict = {}
     kpi_list: list    = []
 
@@ -709,6 +1018,20 @@ def main():
         )
         all_results[scenario_name] = result
         kpi_list.append(calculate_kpis(result))
+
+    # -- Run again with naive forecast (for comparison) ----------------------
+    all_results_naive: dict = {}
+    kpi_list_naive: list    = []
+
+    if use_xgb:
+        print("Running naive-forecast simulations for comparison …")
+        for scenario_name, scenario_params in scenarios.items():
+            result_n = run_simulation(
+                timestamps, baseline_load, actual_prices,
+                naive_forecast, scenario_params, scenario_name,
+            )
+            all_results_naive[scenario_name] = result_n
+            kpi_list_naive.append(calculate_kpis(result_n))
 
     # -- Print reports ------------------------------------------------------
     print_assumption_overview(scenarios)
@@ -746,7 +1069,13 @@ def main():
             medium_df, "shifted_total_load",
             "Hourly Shifted Load Heatmap — Medium scenario (MW)",
         ),
+        "11_weekly_shift"      : plot_weekly_shift_pattern(medium_df, "medium"),
+        "12_shift_by_hour"     : plot_shift_by_hour_of_day(all_results),
+        "14_one_week_detail"   : plot_one_week_detail(medium_df, "medium"),
     }
+
+    if use_xgb and kpi_list_naive:
+        figs["13_xgb_vs_naive"] = plot_xgboost_vs_naive(kpi_list, kpi_list_naive)
 
     for fname, fig in figs.items():
         if fig is not None:
