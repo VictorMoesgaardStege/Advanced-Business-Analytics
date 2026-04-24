@@ -1,0 +1,14 @@
+Metric,Value
+Observed period start,2022-03-01 00:00:00
+Observed period end,2026-02-01 23:00:00
+"System capacity proxy (historical p99, MWh)",3568.3
+"Peak-hour threshold (historical p95, MWh)",3269.68
+"Low-load threshold (historical p05, MWh)",1694.4
+Observed max load (MWh),4449.86
+Overloaded system hours,345
+Critical system hours,13
+Share of hours in peak zone (%),5.0
+Share of hours in low-load zone (%),5.0
+Top stressed grid area,244 - TREFOR El-Net A/S
+Top area cumulative pressure,17901.79
+30-day maintenance attention threshold,497.44
