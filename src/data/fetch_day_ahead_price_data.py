@@ -1,16 +1,14 @@
 #!/usr/bin/env python3
-"""Fetch day-ahead electricity prices from Energi Data Service.
+"""Fetch and merge historical electricity prices from Energi Data Service.
 
-Dataset: DayAheadPrices
-Docs:
-- Data API: https://api.energidataservice.dk/dataset/DayAheadPrices
+Datasets:
+- Elspotprices
+- DayAheadPrices
 
-Examples:
+Example:
+python src/data/fetch_day_ahead_price_data.py --start 2021-01-01 --end 2026-02-02 --price-area DK1 --csv data/day_ahead_prices_dk1_raw.csv"""
 
-python src/data/fetch_day_ahead_price_data.py --start 2021-01-01 --end 2026-02-02 --price-area DK1 --csv data/day_ahead_prices_dk1_raw.csv
 
-
-"""
 
 from __future__ import annotations
 
@@ -20,18 +18,35 @@ import json
 import sys
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlencode
 
 import requests
 
-BASE_URL = "https://api.energidataservice.dk/dataset/DayAheadPrices"
+DAYAHEAD_URL = "https://api.energidataservice.dk/dataset/DayAheadPrices"
+ELSPOT_URL = "https://api.energidataservice.dk/dataset/Elspotprices"
 
-DEFAULT_COLUMNS = [
+DAYAHEAD_COLUMNS = [
     "TimeUTC",
     "TimeDK",
     "PriceArea",
     "DayAheadPriceEUR",
     "DayAheadPriceDKK",
+]
+
+ELSPOT_COLUMNS = [
+    "HourUTC",
+    "HourDK",
+    "PriceArea",
+    "SpotPriceEUR",
+    "SpotPriceDKK",
+]
+
+OUTPUT_COLUMNS = [
+    "TimeUTC",
+    "TimeDK",
+    "PriceArea",
+    "DayAheadPriceEUR",
+    "DayAheadPriceDKK",
+    "_source_dataset",
 ]
 
 
@@ -72,20 +87,20 @@ def build_params(
     return params
 
 
-def fetch_records(
+def fetch_records_from_url(
+    base_url: str,
     start: str,
     end: str,
     *,
     price_area: list[str] | None = None,
     page_size: int = 5000,
-    sort: str = "TimeUTC desc,PriceArea",
+    sort: str = "",
     columns: list[str] | None = None,
     timezone: str | None = None,
     timeout: int = 30,
 ) -> list[dict[str, Any]]:
-    """Fetch all matching rows, paging with offset/limit."""
     if columns is None:
-        columns = DEFAULT_COLUMNS
+        raise ValueError("columns must be provided")
 
     all_records: list[dict[str, Any]] = []
     offset = 0
@@ -94,7 +109,7 @@ def fetch_records(
     session.headers.update(
         {
             "Accept": "application/json",
-            "User-Agent": "fetch_day_ahead_prices.py/1.0",
+            "User-Agent": "fetch_day_ahead_price_data.py/1.0",
         }
     )
 
@@ -110,13 +125,13 @@ def fetch_records(
             timezone=timezone,
         )
 
-        response = session.get(BASE_URL, params=params, timeout=timeout)
+        response = session.get(base_url, params=params, timeout=timeout)
         response.raise_for_status()
         payload = response.json()
 
         records = payload.get("records", [])
         if not isinstance(records, list):
-            raise RuntimeError("Unexpected API response: 'records' is not a list")
+            raise RuntimeError(f"Unexpected API response from {base_url}: 'records' is not a list")
 
         all_records.extend(records)
 
@@ -135,11 +150,63 @@ def fetch_records(
     return all_records
 
 
+def normalize_dayahead_record(record: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "TimeUTC": record.get("TimeUTC"),
+        "TimeDK": record.get("TimeDK"),
+        "PriceArea": record.get("PriceArea"),
+        "DayAheadPriceEUR": record.get("DayAheadPriceEUR"),
+        "DayAheadPriceDKK": record.get("DayAheadPriceDKK"),
+        "_source_dataset": "DayAheadPrices",
+    }
+
+
+def normalize_elspot_record(record: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "TimeUTC": record.get("HourUTC"),
+        "TimeDK": record.get("HourDK"),
+        "PriceArea": record.get("PriceArea"),
+        "DayAheadPriceEUR": record.get("SpotPriceEUR"),
+        "DayAheadPriceDKK": record.get("SpotPriceDKK"),
+        "_source_dataset": "Elspotprices",
+    }
+
+
+def deduplicate_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    source_priority = {
+        "Elspotprices": 0,
+        "DayAheadPrices": 1,
+    }
+
+    deduped: dict[tuple[str, str, str], dict[str, Any]] = {}
+
+    for r in records:
+        key = (
+            str(r.get("TimeUTC") or ""),
+            str(r.get("TimeDK") or ""),
+            str(r.get("PriceArea") or ""),
+        )
+
+        existing = deduped.get(key)
+        if existing is None:
+            deduped[key] = r
+            continue
+
+        old_prio = source_priority.get(str(existing.get("_source_dataset")), -1)
+        new_prio = source_priority.get(str(r.get("_source_dataset")), -1)
+
+        if new_prio >= old_prio:
+            deduped[key] = r
+
+    merged = list(deduped.values())
+    merged.sort(key=lambda r: (str(r.get("TimeUTC") or ""), str(r.get("PriceArea") or "")))
+    return merged
+
+
 def write_csv(records: list[dict[str, Any]], output_path: Path) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    fieldnames = list(records[0].keys()) if records else DEFAULT_COLUMNS
     with output_path.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer = csv.DictWriter(f, fieldnames=OUTPUT_COLUMNS)
         writer.writeheader()
         writer.writerows(records)
 
@@ -147,95 +214,55 @@ def write_csv(records: list[dict[str, Any]], output_path: Path) -> None:
 def _safe_float(value: Any) -> float:
     if value in (None, "", "null"):
         return 0.0
+    if isinstance(value, str):
+        value = value.replace(",", ".")
     return float(value)
 
 
 def print_summary(records: list[dict[str, Any]]) -> None:
-    print(f"Fetched {len(records)} record(s).")
+    print(f"Merged {len(records)} record(s).")
     if not records:
         return
 
     first = records[0]
     last = records[-1]
-    print(
-        "Time span in returned rows: "
-        f"{last.get('TimeUTC', '?')} -> {first.get('TimeUTC', '?')} "
-        "(UTC, depending on sort)"
-    )
 
-    price_areas = sorted({r.get("PriceArea", "") for r in records if r.get("PriceArea")})
-    print(f"Price areas in result: {', '.join(price_areas) if price_areas else 'n/a'}")
+    print(f"Time span: {first.get('TimeUTC', '?')} -> {last.get('TimeUTC', '?')}")
+    print(f"Price areas: {', '.join(sorted({r['PriceArea'] for r in records if r.get('PriceArea')}))}")
 
-    eur_values = [_safe_float(r.get("DayAheadPriceEUR")) for r in records if r.get("DayAheadPriceEUR") is not None]
-    dkk_values = [_safe_float(r.get("DayAheadPriceDKK")) for r in records if r.get("DayAheadPriceDKK") is not None]
+    counts: dict[str, int] = {}
+    for r in records:
+        src = str(r.get("_source_dataset", "unknown"))
+        counts[src] = counts.get(src, 0) + 1
+
+    print("Rows kept by source:")
+    for src, count in sorted(counts.items()):
+        print(f"  {src}: {count}")
+
+    eur_values = [_safe_float(r["DayAheadPriceEUR"]) for r in records if r.get("DayAheadPriceEUR") is not None]
+    dkk_values = [_safe_float(r["DayAheadPriceDKK"]) for r in records if r.get("DayAheadPriceDKK") is not None]
 
     if eur_values:
-        print(
-            "DayAheadPriceEUR: "
-            f"min={min(eur_values):,.2f}, "
-            f"max={max(eur_values):,.2f}, "
-            f"mean={sum(eur_values) / len(eur_values):,.2f}"
-        )
-
+        print(f"EUR min={min(eur_values):.2f}, max={max(eur_values):.2f}, mean={sum(eur_values)/len(eur_values):.2f}")
     if dkk_values:
-        print(
-            "DayAheadPriceDKK: "
-            f"min={min(dkk_values):,.2f}, "
-            f"max={max(dkk_values):,.2f}, "
-            f"mean={sum(dkk_values) / len(dkk_values):,.2f}"
-        )
+        print(f"DKK min={min(dkk_values):.2f}, max={max(dkk_values):.2f}, mean={sum(dkk_values)/len(dkk_values):.2f}")
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Fetch day-ahead electricity prices from Energi Data Service (DayAheadPrices)."
-    )
-    parser.add_argument(
-        "--start",
-        required=True,
-        help="Start datetime, e.g. 2025-10-01 or 2025-10-01T00:00",
-    )
-    parser.add_argument(
-        "--end",
-        required=True,
-        help="End datetime, exclusive",
-    )
+    parser = argparse.ArgumentParser(description="Fetch and merge Elspotprices + DayAheadPrices.")
+    parser.add_argument("--start", required=True, help="Start datetime, e.g. 2021-01-01")
+    parser.add_argument("--end", required=True, help="End datetime, exclusive")
     parser.add_argument(
         "--price-area",
         action="append",
         choices=["DK1", "DK2", "DE", "NO2", "SE3", "SE4"],
         help="Filter by price area. Repeat to include multiple.",
     )
-    parser.add_argument(
-        "--page-size",
-        type=int,
-        default=5000,
-        help="Rows per request (default: 5000)",
-    )
-    parser.add_argument(
-        "--sort",
-        default="TimeUTC desc,PriceArea",
-        help="API sort expression",
-    )
-    parser.add_argument(
-        "--timezone",
-        help="Optional API timezone parameter, e.g. UTC",
-    )
-    parser.add_argument(
-        "--csv",
-        type=Path,
-        help="Write results to CSV",
-    )
-    parser.add_argument(
-        "--json",
-        type=Path,
-        help="Write results to JSON",
-    )
-    parser.add_argument(
-        "--print-records",
-        action="store_true",
-        help="Print all records as JSON to stdout",
-    )
+    parser.add_argument("--page-size", type=int, default=5000, help="Rows per request")
+    parser.add_argument("--timezone", help="Optional API timezone parameter")
+    parser.add_argument("--csv", type=Path, help="Write merged CSV")
+    parser.add_argument("--json", type=Path, help="Write merged JSON")
+    parser.add_argument("--print-records", action="store_true", help="Print all merged records")
     return parser.parse_args()
 
 
@@ -243,14 +270,28 @@ def main() -> int:
     args = parse_args()
 
     try:
-        records = fetch_records(
+        elspot_records_raw = fetch_records_from_url(
+            ELSPOT_URL,
             start=args.start,
             end=args.end,
             price_area=args.price_area,
             page_size=args.page_size,
-            sort=args.sort,
+            sort="HourUTC desc,PriceArea",
             timezone=args.timezone,
+            columns=ELSPOT_COLUMNS,
         )
+
+        dayahead_records_raw = fetch_records_from_url(
+            DAYAHEAD_URL,
+            start=args.start,
+            end=args.end,
+            price_area=args.price_area,
+            page_size=args.page_size,
+            sort="TimeUTC desc,PriceArea",
+            timezone=args.timezone,
+            columns=DAYAHEAD_COLUMNS,
+        )
+
     except requests.HTTPError as exc:
         print(f"HTTP error: {exc}", file=sys.stderr)
         if exc.response is not None:
@@ -263,40 +304,31 @@ def main() -> int:
         print(f"Unexpected error: {exc}", file=sys.stderr)
         return 1
 
-    print_summary(records)
+    print(f"Fetched {len(elspot_records_raw)} row(s) from Elspotprices")
+    print(f"Fetched {len(dayahead_records_raw)} row(s) from DayAheadPrices")
+
+    merged = (
+        [normalize_elspot_record(r) for r in elspot_records_raw]
+        + [normalize_dayahead_record(r) for r in dayahead_records_raw]
+    )
+
+    merged = deduplicate_records(merged)
+    print_summary(merged)
 
     if args.csv:
-        write_csv(records, args.csv)
+        write_csv(merged, args.csv)
         print(f"Saved CSV to {args.csv}")
 
     if args.json:
         args.json.parent.mkdir(parents=True, exist_ok=True)
-        args.json.write_text(
-            json.dumps(records, indent=2, ensure_ascii=False),
-            encoding="utf-8",
-        )
+        args.json.write_text(json.dumps(merged, indent=2, ensure_ascii=False), encoding="utf-8")
         print(f"Saved JSON to {args.json}")
 
     if args.print_records:
-        print(json.dumps(records, indent=2, ensure_ascii=False))
+        print(json.dumps(merged, indent=2, ensure_ascii=False))
 
     if not args.csv and not args.json and not args.print_records:
-        preview = records[:5]
-        print("\nFirst rows:")
-        print(json.dumps(preview, indent=2, ensure_ascii=False))
-
-    example_params = build_params(
-        args.start,
-        args.end,
-        price_area=args.price_area,
-        limit=min(args.page_size, 100),
-        offset=0,
-        sort=args.sort,
-        columns=DEFAULT_COLUMNS,
-        timezone=args.timezone,
-    )
-    print("\nExample request URL:")
-    print(f"{BASE_URL}?{urlencode(example_params)}")
+        print(json.dumps(merged[:5], indent=2, ensure_ascii=False))
 
     return 0
 
