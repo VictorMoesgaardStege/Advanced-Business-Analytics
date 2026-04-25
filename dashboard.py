@@ -315,23 +315,38 @@ def fig_history(hist: pd.DataFrame, days_back: int) -> go.Figure:
     return fig
 
 
-def fig_context(hist: pd.DataFrame, hourly_fcst: pd.DataFrame) -> go.Figure:
-    """Last 7 days of daily actuals + 120-hour XGBoost forecast at hourly resolution."""
-    df  = hist.tail(7).copy()
+def fig_context(
+    prices: pd.DataFrame,
+    hourly_fcst: pd.DataFrame,
+    ctx_days: int,
+    cutoff: pd.Timestamp | None = None,
+) -> go.Figure:
+    """Last ctx_days of hourly actuals + 120-hour XGBoost forecast at hourly resolution."""
+    if cutoff is None:
+        cutoff = (
+            hourly_fcst["issue_date"].iloc[0] if not hourly_fcst.empty
+            else prices["Date"].max() if not prices.empty
+            else pd.Timestamp.now().normalize()
+        )
+
+    start = cutoff - pd.Timedelta(days=ctx_days)
+    df = prices[(prices["Date"] >= start) & (prices["Date"] <= cutoff)].copy()
+    hourly_hist = df.groupby("_ts", as_index=False)["PriceDKK"].mean().sort_values("_ts")
+
     fig = go.Figure()
 
     fig.add_trace(go.Scatter(
-        x=df["Date"], y=df["AvgDKK"],
-        mode="lines", line=dict(color=C["price"], width=2.5),
-        hovertemplate="%{x|%d %b}<br>Actual (daily avg): <b>%{y:.0f} DKK/MWh</b><extra></extra>",
+        x=hourly_hist["_ts"], y=hourly_hist["PriceDKK"],
+        mode="lines", line=dict(color=C["price"], width=2),
+        hovertemplate="%{x|%d %b %H:%M}<br>Actual: <b>%{y:.0f} DKK/MWh</b><extra></extra>",
         name="Historical actual",
     ))
 
-    # Dotted connector: last historical daily point → first hourly forecast
-    if not df.empty and not hourly_fcst.empty:
+    # Connector: last historical hour → first forecast hour
+    if not hourly_hist.empty and not hourly_fcst.empty:
         fig.add_trace(go.Scatter(
-            x=[df["Date"].iloc[-1], hourly_fcst["target_time"].iloc[0]],
-            y=[df["AvgDKK"].iloc[-1], hourly_fcst["pred_dkk"].iloc[0]],
+            x=[hourly_hist["_ts"].iloc[-1], hourly_fcst["target_time"].iloc[0]],
+            y=[hourly_hist["PriceDKK"].iloc[-1], hourly_fcst["pred_dkk"].iloc[0]],
             mode="lines", line=dict(color=C["fcst"], width=1.5, dash="dot"),
             showlegend=False, hoverinfo="skip",
         ))
@@ -440,6 +455,12 @@ def render_sidebar(
             value=90,
             format_func=lambda x: f"{x} days",
         )
+        ctx_days = st.select_slider(
+            "Context chart — days of history",
+            options=[3, 5, 7, 14, 21, 30],
+            value=7,
+            format_func=lambda x: f"{x} days",
+        )
         show_raw = st.checkbox("Show raw data tables", value=False)
 
         if not metrics.empty:
@@ -460,7 +481,7 @@ def render_sidebar(
         st.divider()
         st.caption("Energi Data Service · DK1 West Denmark\nPrices in DKK/MWh")
 
-    return days_back, show_raw
+    return days_back, ctx_days, show_raw
 
 
 # ── Main dashboard ────────────────────────────────────────────────────────────
@@ -477,7 +498,7 @@ def main() -> None:
     hourly_fcst  = process_predictions_hourly(raw_preds, eur_dkk)
     hist         = daily_history(prices)
 
-    days_back, show_raw = render_sidebar(prices, fcst, metrics)
+    days_back, ctx_days, show_raw = render_sidebar(prices, fcst, metrics)
 
     # Anchor "today" to the model's latest issue date for a consistent time story
     if not fcst.empty:
@@ -567,9 +588,8 @@ def main() -> None:
         st.markdown("<div style='height:.5rem;'></div>", unsafe_allow_html=True)
         st.markdown("<div class='section'>Historical context + XGBoost forecast</div>", unsafe_allow_html=True)
 
-        hist_for_ctx = hist[hist["Date"] <= today_date] if today_date is not None else hist
         st.plotly_chart(
-            fig_context(hist_for_ctx, hourly_fcst),
+            fig_context(prices, hourly_fcst, ctx_days, cutoff=today_date),
             use_container_width=True, config={"displayModeBar": False},
         )
 
