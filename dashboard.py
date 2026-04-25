@@ -10,8 +10,9 @@ import streamlit as st
 # ── Paths & constants ─────────────────────────────────────────────────────────
 DATA_DIR    = Path("data")
 PRICE_FILE  = DATA_DIR / "day_ahead_prices_dk1_raw.csv"
-PRED_FILE   = Path("outputs/model/predictions.parquet")
+PRED_FILE    = Path("outputs/model/predictions.parquet")
 METRICS_FILE = Path("outputs/model/metrics.csv")
+MODEL_FILE   = Path("outputs/model/final_day_models.joblib")
 PRICE_AREA  = "DK1"
 EUR_DKK_FB  = 7.46   # fallback exchange rate
 
@@ -117,6 +118,23 @@ def load_metrics() -> pd.DataFrame:
     if not METRICS_FILE.exists():
         return pd.DataFrame()
     return pd.read_csv(METRICS_FILE)
+
+
+@st.cache_data(show_spinner=False)
+def load_feature_importance() -> pd.DataFrame:
+    """Top-N feature importances from the Day 1 XGBoost model (final_day_models.joblib)."""
+    if not MODEL_FILE.exists():
+        return pd.DataFrame()
+    try:
+        import joblib
+        obj   = joblib.load(MODEL_FILE)
+        # final_day_models is {1: model, 2: model, ..., 5: model}
+        model = obj[1] if isinstance(obj, dict) and 1 in obj else obj
+        names = [str(f) for f in model.feature_names_in_]
+        df    = pd.DataFrame({"feature": names, "importance": model.feature_importances_})
+        return df.sort_values("importance", ascending=False).reset_index(drop=True)
+    except Exception:
+        return pd.DataFrame()
 
 
 # ── Data processing ───────────────────────────────────────────────────────────
@@ -400,6 +418,46 @@ def fig_context(
     return fig
 
 
+def fig_feature_importance(imp_df: pd.DataFrame, top_n: int = 5) -> go.Figure:
+    df = imp_df.head(top_n).copy()
+    # Shorten labels: drop region prefix, replace underscores, title-case
+    def clean(name: str) -> str:
+        name = name.replace("DK1_west_", "").replace("DK2_east_", "")
+        name = name.replace("DE_north_", "DE ").replace("NO_south_", "NO ")
+        name = name.replace("SE_south_", "SE ").replace("_", " ")
+        return name.title()
+    df["label"] = df["feature"].apply(clean)
+    df = df.sort_values("importance", ascending=True)   # ascending so highest is at top in bar chart
+
+    # Colour bars by category
+    def bar_color(name: str) -> str:
+        if "wind" in name:    return C["accent"]
+        if "price" in name:   return C["price"]
+        if "temp" in name or "radiation" in name or "cloud" in name: return C["fcst"]
+        return C["muted"]
+
+    colors = [bar_color(f) for f in df["feature"]]
+
+    fig = go.Figure()
+    fig.add_trace(go.Bar(
+        x=df["importance"],
+        y=df["label"],
+        orientation="h",
+        marker=dict(color=colors, opacity=0.9),
+        hovertemplate="%{y}<br>Importance: <b>%{x:.4f}</b><extra></extra>",
+    ))
+    fig.update_layout(**{
+        **_BASE,
+        "height": 280,
+        "showlegend": False,
+        "title": dict(text="Top 5 feature importances · XGBoost Day 1 model (h=1–24)", font_size=13),
+        "xaxis": dict(**_BASE["xaxis"], title="Gain importance"),
+        "yaxis": dict(**_BASE["yaxis"], showgrid=False),
+        "margin": dict(l=10, r=10, t=36, b=10),
+    })
+    return fig
+
+
 # ── Forecast cards ────────────────────────────────────────────────────────────
 def render_forecast_cards(fcst: pd.DataFrame, today_avg: float) -> None:
     cols = st.columns(len(fcst))
@@ -447,9 +505,9 @@ def render_sidebar(
             groq_ok = False
 
         for label, ok, note in [
-            ("Price data",      not prices.empty, f"{len(prices):,} rows" if not prices.empty else "missing"),
-            ("Model forecasts", not fcst.empty,   "predictions.parquet"),
-            ("Groq AI",         groq_ok,          "API key configured" if groq_ok else "add key to secrets"),
+            ("Price data",      not prices.empty,      f"{len(prices):,} rows" if not prices.empty else "missing"),
+            ("Model forecasts", not raw_preds.empty,   "predictions.parquet"),
+            ("Groq AI",         groq_ok,               "API key configured" if groq_ok else "add key to secrets"),
         ]:
             dot = "🟢" if ok else "🔴"
             st.markdown(
@@ -627,6 +685,17 @@ def main() -> None:
             fig_context(prices, hourly_fcst, ctx_days, cutoff=today_date, show_actuals=show_actuals),
             use_container_width=True, config={"displayModeBar": False},
         )
+
+    # ── Feature importance ────────────────────────────────────────────────────
+    imp_df = load_feature_importance()
+    if not imp_df.empty:
+        st.markdown("<div class='section'>XGBoost feature importance</div>", unsafe_allow_html=True)
+        fi_col, _ = st.columns([1, 1])
+        with fi_col:
+            st.plotly_chart(
+                fig_feature_importance(imp_df),
+                use_container_width=True, config={"displayModeBar": False},
+            )
 
     # ── Groq AI section ───────────────────────────────────────────────────────
     st.markdown("<div class='section'>AI insights · Groq Llama 3.3 70B</div>", unsafe_allow_html=True)

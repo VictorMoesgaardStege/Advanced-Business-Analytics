@@ -25,6 +25,7 @@ import pandas as pd
 import xgboost as xgb
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
+import joblib
 from pathlib import Path
 from sklearn.metrics import mean_absolute_error
 from lime import lime_tabular
@@ -591,6 +592,10 @@ def main():
         m.fit(df.loc[mask, FEATURES], df.loc[mask, TARGET_COL])
         final_models[day] = m
         print(f"  Day {day}: {mask.sum():,} rows")
+
+    model_path = OUTPUT_DIR / "final_day_models.joblib"
+    joblib.dump(final_models, model_path)
+    print(f"  Final models saved → {model_path}")
 
     # 4. Plots
     print("\nGenerating plots...")
