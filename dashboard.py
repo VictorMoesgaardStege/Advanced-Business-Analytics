@@ -10,8 +10,9 @@ import streamlit as st
 # ── Paths & constants ─────────────────────────────────────────────────────────
 DATA_DIR    = Path("data")
 PRICE_FILE  = DATA_DIR / "day_ahead_prices_dk1_raw.csv"
-PRED_FILE   = Path("outputs/model/predictions.parquet")
+PRED_FILE    = Path("outputs/model/predictions.parquet")
 METRICS_FILE = Path("outputs/model/metrics.csv")
+MODEL_FILE   = Path("outputs/model/final_day_models.joblib")
 PRICE_AREA  = "DK1"
 EUR_DKK_FB  = 7.46   # fallback exchange rate
 
@@ -119,6 +120,23 @@ def load_metrics() -> pd.DataFrame:
     return pd.read_csv(METRICS_FILE)
 
 
+@st.cache_data(show_spinner=False)
+def load_feature_importance() -> pd.DataFrame:
+    """Top-N feature importances from the Day 1 XGBoost model (final_day_models.joblib)."""
+    if not MODEL_FILE.exists():
+        return pd.DataFrame()
+    try:
+        import joblib
+        obj   = joblib.load(MODEL_FILE)
+        # final_day_models is {1: model, 2: model, ..., 5: model}
+        model = obj[1] if isinstance(obj, dict) and 1 in obj else obj
+        names = [str(f) for f in model.feature_names_in_]
+        df    = pd.DataFrame({"feature": names, "importance": model.feature_importances_})
+        return df.sort_values("importance", ascending=False).reset_index(drop=True)
+    except Exception:
+        return pd.DataFrame()
+
+
 # ── Data processing ───────────────────────────────────────────────────────────
 def compute_eur_dkk(prices: pd.DataFrame) -> float:
     if prices.empty or "PriceEUR" not in prices.columns:
@@ -130,14 +148,24 @@ def compute_eur_dkk(prices: pd.DataFrame) -> float:
     return float((valid["PriceDKK"] / valid["PriceEUR"]).tail(24 * 90).median())
 
 
-def process_predictions(raw: pd.DataFrame, eur_dkk: float) -> pd.DataFrame:
-    """Aggregate latest fold's hourly predictions to 5 daily forecasts."""
+def _resolve_issue_time(raw: pd.DataFrame, selected: pd.Timestamp | None) -> pd.Timestamp:
+    """Return the closest available issue_time to `selected`, or the latest if None."""
+    if selected is None:
+        return pd.Timestamp(raw["issue_time"].max())
+    available = pd.to_datetime(raw["issue_time"].unique())
+    return min(available, key=lambda x: abs(x - selected))
+
+
+def process_predictions(
+    raw: pd.DataFrame, eur_dkk: float, selected: pd.Timestamp | None = None
+) -> pd.DataFrame:
+    """Aggregate selected issue_time's hourly predictions to 5 daily forecasts."""
     if raw.empty:
         return pd.DataFrame()
 
-    latest_issue = raw["issue_time"].max()
-    issue_date   = pd.Timestamp(latest_issue).normalize()
-    sub          = raw[raw["issue_time"] == latest_issue].copy()
+    issue_ts   = _resolve_issue_time(raw, selected)
+    issue_date = issue_ts.normalize()
+    sub        = raw[raw["issue_time"] == issue_ts].copy()
     sub["target_date"] = sub["target_time"].dt.normalize()
 
     future = sub[sub["target_date"] > issue_date]
@@ -152,6 +180,23 @@ def process_predictions(raw: pd.DataFrame, eur_dkk: float) -> pd.DataFrame:
     daily["actual_dkk"] = daily["actual_eur"] * eur_dkk
     daily["issue_date"] = issue_date
     return daily
+
+
+def process_predictions_hourly(
+    raw: pd.DataFrame, eur_dkk: float, selected: pd.Timestamp | None = None
+) -> pd.DataFrame:
+    """Return all 120 hourly predictions for the selected issue_time."""
+    if raw.empty:
+        return pd.DataFrame()
+
+    issue_ts = _resolve_issue_time(raw, selected)
+    sub      = raw[raw["issue_time"] == issue_ts].copy()
+
+    future = sub[sub["target_time"] > issue_ts].sort_values("target_time").head(120)
+    future["pred_dkk"]   = future["predicted"]        * eur_dkk
+    future["actual_dkk"] = future["DayAheadPriceEUR"] * eur_dkk
+    future["issue_date"] = issue_ts.normalize()
+    return future[["target_time", "horizon_h", "pred_dkk", "actual_dkk", "issue_date"]].reset_index(drop=True)
 
 
 def daily_history(prices: pd.DataFrame) -> pd.DataFrame:
@@ -299,63 +344,117 @@ def fig_history(hist: pd.DataFrame, days_back: int) -> go.Figure:
     return fig
 
 
-def fig_context(hist: pd.DataFrame, fcst: pd.DataFrame) -> go.Figure:
-    df  = hist.tail(21).copy()
+def fig_context(
+    prices: pd.DataFrame,
+    hourly_fcst: pd.DataFrame,
+    ctx_days: int,
+    cutoff: pd.Timestamp | None = None,
+    show_actuals: bool = True,
+) -> go.Figure:
+    """Last ctx_days of hourly actuals + 120-hour XGBoost forecast at hourly resolution."""
+    # hist_end = first forecast target hour (exclusive), so there is no overlap
+    if not hourly_fcst.empty:
+        hist_end = hourly_fcst["target_time"].iloc[0]
+    elif cutoff is not None:
+        hist_end = pd.Timestamp(cutoff) + pd.Timedelta(hours=1)
+    else:
+        hist_end = prices["_ts"].max() + pd.Timedelta(hours=1)
+
+    hist_start = hist_end - pd.Timedelta(days=ctx_days)
+
+    # Floor raw timestamps to the hour so granularity matches the forecast
+    df = prices[(prices["_ts"] >= hist_start) & (prices["_ts"] < hist_end)].copy()
+    df["_ts_h"] = df["_ts"].dt.floor("h")
+    hourly_hist = df.groupby("_ts_h", as_index=False)["PriceDKK"].mean().sort_values("_ts_h")
+
     fig = go.Figure()
 
     fig.add_trace(go.Scatter(
-        x=df["Date"], y=df["AvgDKK"],
-        mode="lines", line=dict(color=C["price"], width=2.5),
-        hovertemplate="%{x|%d %b}<br>Actual: <b>%{y:.0f} DKK/MWh</b><extra></extra>",
+        x=hourly_hist["_ts_h"], y=hourly_hist["PriceDKK"],
+        mode="lines", line=dict(color=C["price"], width=2),
+        hovertemplate="%{x|%d %b %H:%M}<br>Actual: <b>%{y:.0f} DKK/MWh</b><extra></extra>",
         name="Historical actual",
     ))
 
-    # Dotted connector: last historical → first forecast
-    if not df.empty and not fcst.empty:
-        fig.add_trace(go.Scatter(
-            x=[df["Date"].iloc[-1], fcst["Date"].iloc[0]],
-            y=[df["AvgDKK"].iloc[-1], fcst["pred_dkk"].iloc[0]],
-            mode="lines", line=dict(color=C["fcst"], width=2, dash="dot"),
-            showlegend=False, hoverinfo="skip",
-        ))
+    # No explicit connector needed — hist ends at the hour before the first forecast point
+    # so the two lines meet naturally with no gap and no overlap.
 
-    if not fcst.empty:
-        # XGBoost predicted line
+    if not hourly_fcst.empty:
+        # XGBoost hourly predictions
         fig.add_trace(go.Scatter(
-            x=fcst["Date"], y=fcst["pred_dkk"],
-            mode="lines+markers",
-            line=dict(color=C["fcst"], width=3),
-            marker=dict(size=10, color=C["fcst"]),
+            x=hourly_fcst["target_time"], y=hourly_fcst["pred_dkk"],
+            mode="lines",
+            line=dict(color=C["fcst"], width=2.5),
             fill="tozeroy", fillcolor=C["fcst_fill"],
-            hovertemplate="%{x|%d %b}<br>XGBoost: <b>%{y:.0f} DKK/MWh</b><extra></extra>",
+            hovertemplate="%{x|%d %b %H:%M}<br>XGBoost: <b>%{y:.0f} DKK/MWh</b><extra></extra>",
             name="XGBoost forecast",
         ))
 
-        # Actual prices for the forecast window (comparison)
-        if fcst["actual_dkk"].notna().any():
+        # Actual prices for the forecast window (optional overlay)
+        if show_actuals and hourly_fcst["actual_dkk"].notna().any():
             fig.add_trace(go.Scatter(
-                x=fcst["Date"], y=fcst["actual_dkk"],
-                mode="lines+markers",
+                x=hourly_fcst["target_time"], y=hourly_fcst["actual_dkk"],
+                mode="lines",
                 line=dict(color=C["good"], width=2, dash="dot"),
-                marker=dict(size=7, color=C["good"], symbol="diamond"),
-                hovertemplate="%{x|%d %b}<br>Actual (known): <b>%{y:.0f} DKK/MWh</b><extra></extra>",
+                hovertemplate="%{x|%d %b %H:%M}<br>Actual: <b>%{y:.0f} DKK/MWh</b><extra></extra>",
                 name="Actual (for comparison)",
             ))
 
         # Shaded forecast zone
         fig.add_vrect(
-            x0=fcst["Date"].iloc[0], x1=fcst["Date"].iloc[-1],
+            x0=hourly_fcst["target_time"].iloc[0],
+            x1=hourly_fcst["target_time"].iloc[-1],
             fillcolor=C["fcst_fill"], layer="below", line_width=0,
-            annotation_text="Forecast window", annotation_position="top left",
+            annotation_text="5-day forecast (hourly)", annotation_position="top left",
             annotation_font_color=C["fcst"], annotation_font_size=11,
         )
 
     fig.update_layout(
-        **_BASE, height=380,
-        title=dict(text="Historical context + XGBoost 5-day forecast", font_size=13),
+        **_BASE, height=400,
+        title=dict(text="Historical context + XGBoost 5-day forecast · hourly resolution", font_size=13),
         legend=dict(orientation="h", y=1.05, x=1, xanchor="right", bgcolor="rgba(0,0,0,0)"),
         yaxis_title="DKK/MWh",
     )
+    return fig
+
+
+def fig_feature_importance(imp_df: pd.DataFrame, top_n: int = 5) -> go.Figure:
+    df = imp_df.head(top_n).copy()
+    # Shorten labels: drop region prefix, replace underscores, title-case
+    def clean(name: str) -> str:
+        name = name.replace("DK1_west_", "").replace("DK2_east_", "")
+        name = name.replace("DE_north_", "DE ").replace("NO_south_", "NO ")
+        name = name.replace("SE_south_", "SE ").replace("_", " ")
+        return name.title()
+    df["label"] = df["feature"].apply(clean)
+    df = df.sort_values("importance", ascending=True)   # ascending so highest is at top in bar chart
+
+    # Colour bars by category
+    def bar_color(name: str) -> str:
+        if "wind" in name:    return C["accent"]
+        if "price" in name:   return C["price"]
+        if "temp" in name or "radiation" in name or "cloud" in name: return C["fcst"]
+        return C["muted"]
+
+    colors = [bar_color(f) for f in df["feature"]]
+
+    fig = go.Figure()
+    fig.add_trace(go.Bar(
+        x=df["importance"],
+        y=df["label"],
+        orientation="h",
+        marker=dict(color=colors, opacity=0.9),
+        hovertemplate="%{y}<br>Importance: <b>%{x:.4f}</b><extra></extra>",
+    ))
+    fig.update_layout(**{
+        **_BASE,
+        "height": 280,
+        "showlegend": False,
+        "title": dict(text="Top 5 feature importances · XGBoost Day 1 model (h=1–24)", font_size=13),
+        "xaxis": dict(**_BASE["xaxis"], title="Gain importance"),
+        "yaxis": dict(**_BASE["yaxis"], showgrid=False),
+        "margin": dict(l=10, r=10, t=36, b=10),
+    })
     return fig
 
 
@@ -377,8 +476,8 @@ def render_forecast_cards(fcst: pd.DataFrame, today_avg: float) -> None:
             <div class="kpi-label">{row['Date'].strftime('%d %b')}</div>
             <div style="font-size:1.75rem; font-weight:900; color:{C['fcst']};
                         margin:.25rem 0 .1rem 0;">{row['pred_dkk']:.0f}</div>
-            <div class="kpi-unit">DKK/MWh</div>
-            <div style="margin-top:.55rem;">{tag} vs today</div>
+            <div class="kpi-unit">DKK/MWh · daily avg</div>
+            <div style="margin-top:.55rem;">{tag} vs today avg</div>
         </div>
         """, unsafe_allow_html=True)
 
@@ -388,7 +487,8 @@ def render_sidebar(
     prices: pd.DataFrame,
     fcst: pd.DataFrame,
     metrics: pd.DataFrame,
-) -> tuple[int, bool]:
+    raw_preds: pd.DataFrame,
+) -> tuple[int, int, bool, pd.Timestamp, bool]:
     with st.sidebar:
         st.markdown(f"""
         <div style="padding:.3rem 0 1rem 0;">
@@ -405,9 +505,9 @@ def render_sidebar(
             groq_ok = False
 
         for label, ok, note in [
-            ("Price data",      not prices.empty, f"{len(prices):,} rows" if not prices.empty else "missing"),
-            ("Model forecasts", not fcst.empty,   "predictions.parquet"),
-            ("Groq AI",         groq_ok,          "API key configured" if groq_ok else "add key to secrets"),
+            ("Price data",      not prices.empty,      f"{len(prices):,} rows" if not prices.empty else "missing"),
+            ("Model forecasts", not raw_preds.empty,   "predictions.parquet"),
+            ("Groq AI",         groq_ok,               "API key configured" if groq_ok else "add key to secrets"),
         ]:
             dot = "🟢" if ok else "🔴"
             st.markdown(
@@ -424,6 +524,32 @@ def render_sidebar(
             value=90,
             format_func=lambda x: f"{x} days",
         )
+        ctx_days = st.select_slider(
+            "Context chart — days of history",
+            options=[3, 5, 7, 14, 21, 30],
+            value=7,
+            format_func=lambda x: f"{x} days",
+        )
+
+        # Forecast window date picker
+        st.divider()
+        st.markdown("**Forecast window**")
+        if not raw_preds.empty:
+            issue_dates = sorted(raw_preds["issue_time"].dt.normalize().unique())
+            min_d = issue_dates[0].date()
+            max_d = issue_dates[-1].date()
+            picked = st.date_input(
+                "Issue date",
+                value=max_d,
+                min_value=min_d,
+                max_value=max_d,
+                help="Select any date to view the 5-day forecast issued on that day.",
+            )
+            selected_issue = pd.Timestamp(picked)
+        else:
+            selected_issue = None
+        show_actuals = st.checkbox("Show actual prices in forecast period", value=True)
+
         show_raw = st.checkbox("Show raw data tables", value=False)
 
         if not metrics.empty:
@@ -444,7 +570,7 @@ def render_sidebar(
         st.divider()
         st.caption("Energi Data Service · DK1 West Denmark\nPrices in DKK/MWh")
 
-    return days_back, show_raw
+    return days_back, ctx_days, show_raw, selected_issue, show_actuals
 
 
 # ── Main dashboard ────────────────────────────────────────────────────────────
@@ -457,10 +583,15 @@ def main() -> None:
         metrics = load_metrics()
 
     eur_dkk = compute_eur_dkk(prices)
-    fcst    = process_predictions(raw_preds, eur_dkk)
-    hist    = daily_history(prices)
 
-    days_back, show_raw = render_sidebar(prices, fcst, metrics)
+    # Sidebar first so selected_issue is known before building forecasts
+    days_back, ctx_days, show_raw, selected_issue, show_actuals = render_sidebar(
+        prices, pd.DataFrame(), metrics, raw_preds
+    )
+
+    fcst        = process_predictions(raw_preds, eur_dkk, selected_issue)
+    hourly_fcst = process_predictions_hourly(raw_preds, eur_dkk, selected_issue)
+    hist        = daily_history(prices)
 
     # Anchor "today" to the model's latest issue date for a consistent time story
     if not fcst.empty:
@@ -475,9 +606,14 @@ def main() -> None:
         if today_date is not None and not prices.empty
         else pd.DataFrame()
     )
-    today_avg = today_prices["PriceDKK"].mean() if not today_prices.empty else np.nan
-    today_min = today_prices["PriceDKK"].min()  if not today_prices.empty else np.nan
-    today_max = today_prices["PriceDKK"].max()  if not today_prices.empty else np.nan
+    # Aggregate to hourly so KPIs match the chart (raw data has 15-min intervals)
+    today_hourly = (
+        today_prices.groupby("Hour", as_index=False)["PriceDKK"].mean()
+        if not today_prices.empty else pd.DataFrame()
+    )
+    today_avg = today_hourly["PriceDKK"].mean() if not today_hourly.empty else np.nan
+    today_min = today_hourly["PriceDKK"].min()  if not today_hourly.empty else np.nan
+    today_max = today_hourly["PriceDKK"].max()  if not today_hourly.empty else np.nan
     fcst_avg  = fcst["pred_dkk"].mean()          if not fcst.empty         else np.nan
 
     # ── Header ────────────────────────────────────────────────────────────────
@@ -523,9 +659,8 @@ def main() -> None:
         if today_prices.empty:
             st.info("No hourly price data available for the reference date.")
         else:
-            hourly = today_prices.groupby("Hour", as_index=False)["PriceDKK"].mean()
             st.plotly_chart(
-                fig_today(hourly, today_date),
+                fig_today(today_hourly, today_date),
                 use_container_width=True, config={"displayModeBar": False},
             )
 
@@ -550,11 +685,21 @@ def main() -> None:
         st.markdown("<div style='height:.5rem;'></div>", unsafe_allow_html=True)
         st.markdown("<div class='section'>Historical context + XGBoost forecast</div>", unsafe_allow_html=True)
 
-        hist_for_ctx = hist[hist["Date"] <= today_date] if today_date is not None else hist
         st.plotly_chart(
-            fig_context(hist_for_ctx, fcst),
+            fig_context(prices, hourly_fcst, ctx_days, cutoff=today_date, show_actuals=show_actuals),
             use_container_width=True, config={"displayModeBar": False},
         )
+
+    # ── Feature importance ────────────────────────────────────────────────────
+    imp_df = load_feature_importance()
+    if not imp_df.empty:
+        st.markdown("<div class='section'>XGBoost feature importance</div>", unsafe_allow_html=True)
+        fi_col, _ = st.columns([1, 1])
+        with fi_col:
+            st.plotly_chart(
+                fig_feature_importance(imp_df),
+                use_container_width=True, config={"displayModeBar": False},
+            )
 
     # ── Groq AI section ───────────────────────────────────────────────────────
     st.markdown("<div class='section'>AI insights · Groq Llama 3.3 70B</div>", unsafe_allow_html=True)
