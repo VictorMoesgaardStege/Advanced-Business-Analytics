@@ -35,8 +35,10 @@ np.random.seed(42)
 SIMULATION_DAYS   = 45           # how many hours of the available data to use
 FORECAST_HORIZON  = 5 * 24      # hours the app looks ahead (5 days)
 STRESS_PERCENTILE = 95           # top X% prices define "stress hours"
+LOAD_PEAK_PERCENTILE = 95        # top X% baseline-load hours tracked as a peak KPI
 OUTPUT_DIR        = Path("simulation_outputs")
 MAX_SHIFT_IN_MW   = 200         # hard cap: no single hour may receive more than this via shifting
+TARGET_LOAD_QUANTILE = 75        # prefer target hours below this baseline-load quantile
 
 # Time-of-day shiftability: fraction of total demand that is physically
 # shiftable in each time slot. Acts as a hard ceiling on max_movable
@@ -290,26 +292,51 @@ def find_best_target(
     current_price: float,
     max_wait_hours: int,
     decay_rate: float,
+    baseline_load: np.ndarray,
+    shifted_in: np.ndarray,
+    preferred_target_load: float,
 ) -> tuple:
     """
     Scans future hours in [t+1, t+max_wait_hours] and returns
     (best_future_index, best_score).
+    Preferentially selects future hours with spare load headroom so shifted
+    demand is less likely to create a new artificial peak elsewhere.
     Returns (-1, 0.0) if no beneficial future period exists.
     """
-    n          = len(forecast_prices)
-    best_idx   = -1
-    best_score = 0.0
+    n = len(forecast_prices)
 
-    for w in range(1, max_wait_hours + 1):
-        future_t = t + w
-        if future_t >= n:
-            break
-        score = compute_shift_score(current_price, forecast_prices[future_t], w, decay_rate)
-        if score > best_score:
-            best_score = score
-            best_idx   = future_t
+    def scan_candidates(require_headroom: bool) -> tuple:
+        best_idx = -1
+        best_score = 0.0
 
-    return best_idx, best_score
+        for w in range(1, max_wait_hours + 1):
+            future_t = t + w
+            if future_t >= n:
+                break
+
+            cap_headroom = max(0.0, MAX_SHIFT_IN_MW - shifted_in[future_t])
+            if cap_headroom <= 1e-6:
+                continue
+
+            projected_target_load = baseline_load[future_t] + shifted_in[future_t]
+            has_load_headroom = projected_target_load < preferred_target_load
+            if require_headroom and not has_load_headroom:
+                continue
+
+            score = compute_shift_score(
+                current_price, forecast_prices[future_t], w, decay_rate
+            )
+            if score > best_score:
+                best_score = score
+                best_idx = future_t
+
+        return best_idx, best_score
+
+    best_idx, best_score = scan_candidates(require_headroom=True)
+    if best_idx != -1:
+        return best_idx, best_score
+
+    return scan_candidates(require_headroom=False)
 
 
 # -----------------------------------------------------------------------------
@@ -339,6 +366,7 @@ def run_simulation(
     actual   = actual_prices.values
     forecast = forecast_prices.values
     load     = baseline_load.values
+    preferred_target_load = np.percentile(load, TARGET_LOAD_QUANTILE)
 
     total_flex_share = sum(p["share_of_load"] for p in scenario_params.values())
     inflexible_share = max(0.0, 1.0 - total_flex_share)
@@ -369,6 +397,7 @@ def run_simulation(
             best_idx, best_score = find_best_target(
                 t, forecast, current_price,
                 params["max_wait_hours"], params["decay_rate"],
+                load, shifted_in, preferred_target_load,
             )
 
             if best_idx == -1 or best_score <= 0:
@@ -445,6 +474,10 @@ def calculate_kpis(results: pd.DataFrame) -> dict:
 
     baseline_peak    = df["baseline_load"].max()
     shifted_peak     = df["shifted_total_load"].max()
+    baseline_peak_idx = df["baseline_load"].idxmax()
+    original_peak_baseline = df.loc[baseline_peak_idx, "baseline_load"]
+    original_peak_shifted = df.loc[baseline_peak_idx, "shifted_total_load"]
+    original_peak_reduction = original_peak_baseline - original_peak_shifted
 
     # Cost in kDKK (price DKK/MWh × load MW × 1 h = DKK; /1000 = kDKK)
     baseline_cost    = (df["actual_price"] * df["baseline_load"]).sum() / 1_000
@@ -453,6 +486,11 @@ def calculate_kpis(results: pd.DataFrame) -> dict:
     stress_baseline  = df.loc[stress_mask, "baseline_load"].sum()
     stress_shifted   = df.loc[stress_mask, "shifted_total_load"].sum()
     stress_reduction = stress_baseline - stress_shifted
+    load_peak_threshold = np.percentile(df["baseline_load"], LOAD_PEAK_PERCENTILE)
+    load_peak_mask = df["baseline_load"] >= load_peak_threshold
+    load_peak_baseline = df.loc[load_peak_mask, "baseline_load"].sum()
+    load_peak_shifted = df.loc[load_peak_mask, "shifted_total_load"].sum()
+    load_peak_reduction = load_peak_baseline - load_peak_shifted
 
     shifted_hours    = df[df["shifted_out"] > 0]
     avg_wait = (
@@ -468,6 +506,10 @@ def calculate_kpis(results: pd.DataFrame) -> dict:
         "baseline_peak_mw"         : round(baseline_peak, 1),
         "shifted_peak_mw"          : round(shifted_peak, 1),
         "peak_reduction_pct"       : round(100 * (baseline_peak - shifted_peak) / baseline_peak, 2),
+        "original_peak_hour_reduction_mw": round(original_peak_reduction, 1),
+        "original_peak_hour_reduction_pct": round(
+            100 * original_peak_reduction / original_peak_baseline, 2
+        ),
         "baseline_cost_dkk_k"      : round(baseline_cost, 0),
         "shifted_cost_dkk_k"       : round(shifted_cost, 0),
         "user_savings_dkk_k"       : round(baseline_cost - shifted_cost, 0),
@@ -476,6 +518,11 @@ def calculate_kpis(results: pd.DataFrame) -> dict:
         "stress_load_reduced_mwh"  : round(stress_reduction, 1),
         "stress_reduction_pct"     : round(100 * stress_reduction / stress_baseline, 2)
                                      if stress_baseline > 0 else 0.0,
+        "load_peak_threshold_mw"   : round(load_peak_threshold, 1),
+        "top_load_hours_reduced_mwh": round(load_peak_reduction, 1),
+        "top_load_hours_reduction_pct": round(
+            100 * load_peak_reduction / load_peak_baseline, 2
+        ) if load_peak_baseline > 0 else 0.0,
         "avg_wait_hours"           : round(avg_wait, 2),
         "n_shifting_hours"         : len(shifted_hours),
     }
@@ -671,7 +718,7 @@ def plot_scenario_comparison(kpi_list: list) -> plt.Figure:
     df = pd.DataFrame(kpi_list).set_index("scenario")
     metrics = [
         ("total_shifted_energy_mwh",   "Shifted Energy\n(MWh)"),
-        ("peak_reduction_pct",          "Peak Reduction\n(%)"),
+        ("original_peak_hour_reduction_pct", "Original Peak-Hour\nReduction (%)"),
         ("stress_reduction_pct",        "Stress-Hour\nReduction (%)"),
         ("savings_pct",                 "User Savings\n(%)"),
     ]
@@ -835,7 +882,7 @@ def plot_xgboost_vs_naive(kpis_xgb: list, kpis_naive: list) -> plt.Figure:
 
     metrics = [
         ("total_shifted_energy_mwh", "Shifted Energy (MWh)"),
-        ("peak_reduction_pct",        "Peak Reduction (%)"),
+        ("original_peak_hour_reduction_pct", "Original Peak-Hour Reduction (%)"),
         ("stress_reduction_pct",      "Stress-Hour\nReduction (%)"),
         ("savings_pct",               "User Savings (%)"),
         ("avg_wait_hours",            "Avg Wait (hours)"),
@@ -975,7 +1022,8 @@ def print_narrative_summary(kpi_list: list) -> None:
             f"\n  [{kpi['scenario'].upper()}]  "
             f"The app shifted {kpi['total_shifted_energy_mwh']:,.0f} MWh "
             f"({kpi['share_of_load_shifted_pct']:.1f}% of total load), "
-            f"reduced peak load by {kpi['peak_reduction_pct']:.1f}%, "
+            f"reduced the original peak hour by {kpi['original_peak_hour_reduction_pct']:.1f}%, "
+            f"lowered top-load hours by {kpi['top_load_hours_reduction_pct']:.1f}%, "
             f"cut stress-hour load by {kpi['stress_reduction_pct']:.1f}%, "
             f"and saved users ~{kpi['user_savings_dkk_k']:,.0f} kDKK "
             f"({kpi['savings_pct']:.2f}% of baseline electricity cost)."

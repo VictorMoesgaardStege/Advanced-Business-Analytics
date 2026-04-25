@@ -25,6 +25,7 @@ import pandas as pd
 import xgboost as xgb
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
+import joblib
 from pathlib import Path
 from sklearn.metrics import mean_absolute_error
 from lime import lime_tabular
@@ -591,6 +592,30 @@ def main():
         m.fit(df.loc[mask, FEATURES], df.loc[mask, TARGET_COL])
         final_models[day] = m
         print(f"  Day {day}: {mask.sum():,} rows")
+
+    model_path = OUTPUT_DIR / "final_day_models.joblib"
+    joblib.dump(final_models, model_path)
+    print(f"  Final models saved → {model_path}")
+
+    # Save SHAP data for Day 1 (consumed by the Streamlit dashboard)
+    print("\nComputing SHAP values for Day 1 model (dashboard export)...")
+    try:
+        import shap as _shap
+        mask_d1 = df["horizon_h"].between(1, 24)
+        X_d1 = (
+            df.loc[mask_d1, FEATURES]
+            .sample(min(500, mask_d1.sum()), random_state=42)
+            .reset_index(drop=True)
+        )
+        _explainer = _shap.TreeExplainer(final_models[1])
+        _shap_vals = _explainer.shap_values(X_d1)
+        pd.DataFrame(_shap_vals, columns=FEATURES).to_parquet(
+            OUTPUT_DIR / "shap_day1_values.parquet", index=False
+        )
+        X_d1.to_parquet(OUTPUT_DIR / "shap_day1_features.parquet", index=False)
+        print(f"  SHAP data saved → {OUTPUT_DIR}/shap_day1_*.parquet")
+    except Exception as e:
+        print(f"  SHAP export skipped: {e}")
 
     # 4. Plots
     print("\nGenerating plots...")
