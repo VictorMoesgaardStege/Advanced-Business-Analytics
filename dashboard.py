@@ -1,712 +1,628 @@
 from __future__ import annotations
 
-import math
 from pathlib import Path
-from typing import Optional
 
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
+# ── Paths & constants ─────────────────────────────────────────────────────────
+DATA_DIR    = Path("data")
+PRICE_FILE  = DATA_DIR / "day_ahead_prices_dk1_raw.csv"
+PRED_FILE   = Path("outputs/model/predictions.parquet")
+METRICS_FILE = Path("outputs/model/metrics.csv")
+PRICE_AREA  = "DK1"
+EUR_DKK_FB  = 7.46   # fallback exchange rate
 
-# ============================================================
-# Streamlit dashboard skeleton for internal DK1 household users
-# Uses existing raw CSV files from the repository.
-#
-# Expected files in repo root /data:
-#   - day_ahead_prices_dk1_raw.csv
-#   - consumption_dk1_raw.csv
-#   - supply_forecasts_dk1_raw.csv
-#
-# Run with:
-#   streamlit run streamlit_energy_dashboard.py
-# ============================================================
-
-DATA_DIR = Path("data")
-PRICE_FILE = DATA_DIR / "day_ahead_prices_dk1_raw.csv"
-CONSUMPTION_FILE = DATA_DIR / "consumption_dk1_raw.csv"
-SUPPLY_FILE = DATA_DIR / "supply_forecasts_dk1_raw.csv"
-
-REFRESH_FREQUENCY = "Daily"
-PRICE_AREA = "DK1"
-
-COLORS = {
-    "bg": "#f3f4f6",
-    "card": "#ffffff",
-    "text": "#1f2937",
-    "muted": "#6b7280",
-    "price": "#dc2626",
-    "price_soft": "#fca5a5",
-    "wind_onshore": "#0ea5a4",
-    "wind_offshore": "#2563eb",
-    "solar": "#f59e0b",
-    "consumption": "#7c3aed",
-    "good": "#059669",
-    "warn": "#dc2626",
-    "neutral": "#475569",
+C = {
+    "bg":          "#0f172a",
+    "card":        "#1e293b",
+    "border":      "#334155",
+    "text":        "#f1f5f9",
+    "muted":       "#94a3b8",
+    "accent":      "#38bdf8",
+    "price":       "#fb923c",
+    "price_fill":  "rgba(251,146,60,0.12)",
+    "fcst":        "#a78bfa",
+    "fcst_fill":   "rgba(167,139,250,0.12)",
+    "good":        "#4ade80",
+    "warn":        "#f87171",
+    "grid":        "rgba(148,163,184,0.07)",
 }
 
 
-def apply_page_style() -> None:
+# ── Page config & CSS ─────────────────────────────────────────────────────────
+def setup_page() -> None:
     st.set_page_config(
         page_title="DK1 Energy Planner",
         page_icon="⚡",
         layout="wide",
         initial_sidebar_state="expanded",
     )
-    st.markdown(
-        f"""
-        <style>
-            .stApp {{
-                background-color: {COLORS['bg']};
-                color: {COLORS['text']};
-            }}
-            .block-container {{
-                padding-top: 1.2rem;
-                padding-bottom: 1.2rem;
-            }}
-            .metric-card {{
-                background: {COLORS['card']};
-                border-radius: 18px;
-                padding: 1rem 1.1rem;
-                box-shadow: 0 3px 14px rgba(15, 23, 42, 0.08);
-                min-height: 120px;
-            }}
-            .section-card {{
-                background: {COLORS['card']};
-                border-radius: 18px;
-                padding: 1rem 1.2rem 0.7rem 1.2rem;
-                box-shadow: 0 3px 14px rgba(15, 23, 42, 0.08);
-                margin-bottom: 1rem;
-            }}
-            .small-muted {{
-                color: {COLORS['muted']};
-                font-size: 0.88rem;
-            }}
-            .recommend-good {{
-                color: {COLORS['good']};
-                font-weight: 600;
-            }}
-            .recommend-warn {{
-                color: {COLORS['warn']};
-                font-weight: 600;
-            }}
-            .recommend-neutral {{
-                color: {COLORS['neutral']};
-                font-weight: 600;
-            }}
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
+    st.markdown(f"""
+    <style>
+    .stApp {{background:{C['bg']}; color:{C['text']};}}
+    .block-container {{padding:1.5rem 2rem 3rem 2rem; max-width:1440px;}}
+
+    /* KPI cards */
+    .kpi {{background:{C['card']}; border:1px solid {C['border']}; border-radius:16px;
+           padding:1.2rem 1.5rem; min-height:108px;}}
+    .kpi-label {{color:{C['muted']}; font-size:.72rem; font-weight:700;
+                 text-transform:uppercase; letter-spacing:.07em;}}
+    .kpi-val   {{font-size:1.9rem; font-weight:900; line-height:1.1; margin:.2rem 0 0 0;}}
+    .kpi-unit  {{color:{C['muted']}; font-size:.76rem; margin-top:.15rem;}}
+
+    /* Section headers */
+    .section {{color:{C['muted']}; font-size:.72rem; font-weight:700;
+               text-transform:uppercase; letter-spacing:.08em; margin:1.5rem 0 .65rem 0;}}
+
+    /* Forecast day cards */
+    .fcard {{background:{C['card']}; border:1px solid {C['border']}; border-radius:14px;
+             padding:1rem 1.1rem; text-align:center;}}
+
+    /* Delta badges */
+    .tag-up  {{background:rgba(248,113,113,.15); color:{C['warn']};   border-radius:20px;
+               padding:.18rem .65rem; font-size:.76rem; font-weight:700; white-space:nowrap;}}
+    .tag-dn  {{background:rgba(74,222,128,.15);  color:{C['good']};   border-radius:20px;
+               padding:.18rem .65rem; font-size:.76rem; font-weight:700; white-space:nowrap;}}
+    .tag-eq  {{background:rgba(148,163,184,.15); color:{C['muted']};  border-radius:20px;
+               padding:.18rem .65rem; font-size:.76rem; font-weight:700; white-space:nowrap;}}
+
+    /* Hide Streamlit chrome */
+    #MainMenu, footer, .stDeployButton {{display:none !important;}}
+    div[data-testid="stSidebar"] {{background:{C['card']};}}
+    </style>
+    """, unsafe_allow_html=True)
 
 
+# ── Data loading ──────────────────────────────────────────────────────────────
 @st.cache_data(show_spinner=False)
-def load_prices(path_str: str, mtime: float) -> pd.DataFrame:
-    path = Path(path_str)
-    if not path.exists():
+def load_prices() -> pd.DataFrame:
+    if not PRICE_FILE.exists():
         return pd.DataFrame()
 
-    df = pd.read_csv(path)
+    df = pd.read_csv(PRICE_FILE)
 
-    if "TimeDK" in df.columns:
-        df["TimeDK"] = pd.to_datetime(df["TimeDK"], errors="coerce")
-    elif "HourDK" in df.columns:
-        df["TimeDK"] = pd.to_datetime(df["HourDK"], errors="coerce")
-    elif "TimeUTC" in df.columns:
-        df["TimeDK"] = pd.to_datetime(df["TimeUTC"], errors="coerce")
-    elif "HourUTC" in df.columns:
-        df["TimeDK"] = pd.to_datetime(df["HourUTC"], errors="coerce")
-    else:
+    ts_col = next((c for c in ("TimeDK", "HourDK", "TimeUTC", "HourUTC") if c in df.columns), None)
+    if ts_col is None:
         return pd.DataFrame()
+    df["_ts"] = pd.to_datetime(df[ts_col], errors="coerce")
 
     if "PriceArea" in df.columns:
         df = df[df["PriceArea"].astype(str).str.strip() == PRICE_AREA].copy()
 
-    if "DayAheadPriceDKK" in df.columns:
-        df["PriceDKK"] = pd.to_numeric(df["DayAheadPriceDKK"], errors="coerce")
-    else:
+    if "DayAheadPriceDKK" not in df.columns:
         return pd.DataFrame()
 
-    df = df.dropna(subset=["TimeDK", "PriceDKK"]).copy()
-    df = df.sort_values("TimeDK").reset_index(drop=True)
+    df["PriceDKK"] = pd.to_numeric(df["DayAheadPriceDKK"], errors="coerce")
+    if "DayAheadPriceEUR" in df.columns:
+        df["PriceEUR"] = pd.to_numeric(df["DayAheadPriceEUR"], errors="coerce")
 
-    df["Date"] = df["TimeDK"].dt.normalize()
-    df["Hour"] = df["TimeDK"].dt.hour
-
+    df = df.dropna(subset=["_ts", "PriceDKK"]).sort_values("_ts").reset_index(drop=True)
+    df["Date"] = df["_ts"].dt.normalize()
+    df["Hour"] = df["_ts"].dt.hour
     return df
 
 
 @st.cache_data(show_spinner=False)
-def load_consumption(path: Path) -> pd.DataFrame:
-    if not path.exists():
+def load_raw_predictions() -> pd.DataFrame:
+    if not PRED_FILE.exists():
         return pd.DataFrame()
-
-    df = pd.read_csv(path)
-    if "TimeDK" in df.columns:
-        df["TimeDK"] = pd.to_datetime(df["TimeDK"], errors="coerce")
-    elif "Date" in df.columns:
-        df["TimeDK"] = pd.to_datetime(df["Date"], errors="coerce")
-
-    if "ConsumptionkWh" in df.columns:
-        df["ConsumptionkWh"] = pd.to_numeric(df["ConsumptionkWh"], errors="coerce")
-
-    if "PriceArea" in df.columns:
-        df = df[df["PriceArea"] == PRICE_AREA].copy()
-
-    df = df.dropna(subset=["TimeDK"]).sort_values("TimeDK").reset_index(drop=True)
-    df["Date"] = df["TimeDK"].dt.date
-    return df
+    return pd.read_parquet(PRED_FILE)
 
 
 @st.cache_data(show_spinner=False)
-def load_supply(path: Path) -> pd.DataFrame:
-    if not path.exists():
+def load_metrics() -> pd.DataFrame:
+    if not METRICS_FILE.exists():
+        return pd.DataFrame()
+    return pd.read_csv(METRICS_FILE)
+
+
+# ── Data processing ───────────────────────────────────────────────────────────
+def compute_eur_dkk(prices: pd.DataFrame) -> float:
+    if prices.empty or "PriceEUR" not in prices.columns:
+        return EUR_DKK_FB
+    valid = prices.dropna(subset=["PriceDKK", "PriceEUR"])
+    valid = valid[valid["PriceEUR"] > 1]
+    if len(valid) < 24:
+        return EUR_DKK_FB
+    return float((valid["PriceDKK"] / valid["PriceEUR"]).tail(24 * 90).median())
+
+
+def process_predictions(raw: pd.DataFrame, eur_dkk: float) -> pd.DataFrame:
+    """Aggregate latest fold's hourly predictions to 5 daily forecasts."""
+    if raw.empty:
         return pd.DataFrame()
 
-    df = pd.read_csv(path)
-    if "HourDK" in df.columns:
-        df["TimeDK"] = pd.to_datetime(df["HourDK"], errors="coerce")
-    elif "HourUTC" in df.columns:
-        df["TimeDK"] = pd.to_datetime(df["HourUTC"], errors="coerce")
-    else:
-        df["TimeDK"] = pd.NaT
+    latest_issue = raw["issue_time"].max()
+    issue_date   = pd.Timestamp(latest_issue).normalize()
+    sub          = raw[raw["issue_time"] == latest_issue].copy()
+    sub["target_date"] = sub["target_time"].dt.normalize()
 
-    numeric_cols = [
-        "ForecastDayAhead",
-        "ForecastIntraday",
-        "Forecast5Hour",
-        "Forecast1Hour",
-        "ForecastCurrent",
-    ]
-    for col in numeric_cols:
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors="coerce")
-
-    if "PriceArea" in df.columns:
-        df = df[df["PriceArea"] == PRICE_AREA].copy()
-
-    df = df.dropna(subset=["TimeDK"]).sort_values("TimeDK").reset_index(drop=True)
-    df["Date"] = df["TimeDK"].dt.date
-    return df
-
-
-def compute_daily_price_history(price_df: pd.DataFrame) -> pd.DataFrame:
-    if price_df.empty:
-        return pd.DataFrame(columns=["Date", "AvgPriceDKK"])
-
-    out = (
-        price_df.groupby("Date", as_index=False)["DayAheadPriceDKK"]
-        .mean()
-        .rename(columns={"DayAheadPriceDKK": "AvgPriceDKK"})
-    )
-    out["Date"] = pd.to_datetime(out["Date"])
-    return out
-
-
-def get_today_hourly_prices(price_df: pd.DataFrame) -> tuple[pd.DataFrame, Optional[pd.Timestamp]]:
-    if price_df.empty:
-        return pd.DataFrame(), None
-
-    latest_ts = price_df["TimeDK"].max()
-    today = latest_ts.normalize()
-
-    today_df = price_df[price_df["Date"] == today].copy()
-
-    if today_df.empty:
-        return pd.DataFrame(), latest_ts
-
-    hourly_df = (
-        today_df.groupby("Hour", as_index=False)["PriceDKK"]
-        .mean()
-        .rename(columns={"PriceDKK": "HourlyPriceDKK"})
-    )
-
-    hourly_df["TimeDK"] = pd.to_datetime(today) + pd.to_timedelta(hourly_df["Hour"], unit="h")
-    hourly_df = hourly_df.sort_values("TimeDK").reset_index(drop=True)
-
-    return hourly_df, latest_ts
-
-
-def choose_supply_value_column(df: pd.DataFrame) -> Optional[str]:
-    candidates = [
-        "ForecastCurrent",
-        "Forecast1Hour",
-        "Forecast5Hour",
-        "ForecastIntraday",
-        "ForecastDayAhead",
-    ]
-    for col in candidates:
-        if col in df.columns and df[col].notna().any():
-            return col
-    return None
-
-
-def build_supply_daily_features(supply_df: pd.DataFrame) -> pd.DataFrame:
-    if supply_df.empty or "ForecastType" not in supply_df.columns:
-        return pd.DataFrame(columns=["Date", "Solar", "Onshore Wind", "Offshore Wind", "TotalRenewables"])
-
-    value_col = choose_supply_value_column(supply_df)
-    if value_col is None:
-        return pd.DataFrame(columns=["Date", "Solar", "Onshore Wind", "Offshore Wind", "TotalRenewables"])
-
-    grouped = (
-        supply_df.groupby(["Date", "ForecastType"], as_index=False)[value_col]
-        .mean()
-        .pivot(index="Date", columns="ForecastType", values=value_col)
+    future = sub[sub["target_date"] > issue_date]
+    daily  = (
+        future.groupby("target_date")
+        .agg(pred_eur=("predicted", "mean"), actual_eur=("DayAheadPriceEUR", "mean"))
         .reset_index()
+        .rename(columns={"target_date": "Date"})
+        .head(5)
     )
-
-    for col in ["Solar", "Onshore Wind", "Offshore Wind"]:
-        if col not in grouped.columns:
-            grouped[col] = np.nan
-
-    grouped["TotalRenewables"] = grouped[["Solar", "Onshore Wind", "Offshore Wind"]].sum(axis=1, skipna=True)
-    grouped["Date"] = pd.to_datetime(grouped["Date"])
-    return grouped.sort_values("Date")
+    daily["pred_dkk"]   = daily["pred_eur"]   * eur_dkk
+    daily["actual_dkk"] = daily["actual_eur"] * eur_dkk
+    daily["issue_date"] = issue_date
+    return daily
 
 
-def build_consumption_daily_features(cons_df: pd.DataFrame) -> pd.DataFrame:
-    if cons_df.empty or "ConsumptionkWh" not in cons_df.columns:
-        return pd.DataFrame(columns=["Date", "AvgConsumptionkWh"])
-
-    out = (
-        cons_df.groupby("Date", as_index=False)["ConsumptionkWh"]
+def daily_history(prices: pd.DataFrame) -> pd.DataFrame:
+    if prices.empty:
+        return pd.DataFrame()
+    return (
+        prices.groupby("Date", as_index=False)["PriceDKK"]
         .mean()
-        .rename(columns={"ConsumptionkWh": "AvgConsumptionkWh"})
+        .rename(columns={"PriceDKK": "AvgDKK"})
+        .sort_values("Date")
     )
-    out["Date"] = pd.to_datetime(out["Date"])
-    return out.sort_values("Date")
 
 
-def build_placeholder_forecast(
-    daily_prices: pd.DataFrame,
-    daily_supply: pd.DataFrame,
-    daily_consumption: pd.DataFrame,
-    horizon_days: int = 5,
-) -> pd.DataFrame:
-    if daily_prices.empty:
-        return pd.DataFrame(columns=["Date", "PredictedAvgDKK", "DeltaVsToday", "Reason"])
-
-    history = daily_prices.sort_values("Date").copy()
-    latest_date = history["Date"].max()
-    today_avg = history.loc[history["Date"] == latest_date, "AvgPriceDKK"].iloc[0]
-
-    recent = history.tail(7)
-    base_avg = recent["AvgPriceDKK"].mean()
-
-    supply_recent = daily_supply.sort_values("Date").tail(7) if not daily_supply.empty else pd.DataFrame()
-    cons_recent = daily_consumption.sort_values("Date").tail(7) if not daily_consumption.empty else pd.DataFrame()
-
-    renewable_trend = 0.0
-    consumption_trend = 0.0
-
-    if not supply_recent.empty and supply_recent["TotalRenewables"].notna().any():
-        renewable_trend = supply_recent["TotalRenewables"].tail(3).mean() - supply_recent["TotalRenewables"].head(3).mean()
-
-    if not cons_recent.empty and cons_recent["AvgConsumptionkWh"].notna().any():
-        consumption_trend = cons_recent["AvgConsumptionkWh"].tail(3).mean() - cons_recent["AvgConsumptionkWh"].head(3).mean()
-
-    renewable_scale = 0.0 if math.isnan(renewable_trend) else renewable_trend * (-0.015)
-    consumption_scale = 0.0 if math.isnan(consumption_trend) else consumption_trend * 0.0008
-
-    rows = []
-    for step in range(1, horizon_days + 1):
-        drift = (today_avg - base_avg) * 0.15 * step
-        placeholder_adjustment = renewable_scale + consumption_scale
-        pred = max(0.0, base_avg + drift + placeholder_adjustment)
-        date = latest_date + pd.Timedelta(days=step)
-        delta = pred - today_avg
-
-        if delta <= -25:
-            reason = "Renewable supply looks supportive and prices may soften."
-        elif delta >= 25:
-            reason = "Recent price momentum and demand pressure suggest higher prices."
-        else:
-            reason = "Prices look broadly stable with only modest short-term change."
-
-        rows.append(
-            {
-                "Date": date,
-                "PredictedAvgDKK": pred,
-                "DeltaVsToday": delta,
-                "Reason": reason,
-            }
+# ── Groq AI ───────────────────────────────────────────────────────────────────
+def groq_call(prompt: str) -> str:
+    try:
+        from groq import Groq
+        try:
+            api_key = st.secrets.get("GROQ_API_KEY", "")
+        except Exception:
+            return ""
+        if not api_key:
+            return ""
+        client = Groq(api_key=api_key)
+        resp   = client.chat.completions.create(
+            model    = "llama-3.3-70b-versatile",
+            messages = [{"role": "user", "content": prompt}],
+            max_tokens  = 700,
+            temperature = 0.4,
         )
-
-    return pd.DataFrame(rows)
-
-
-def generate_recommendation_text(forecast_df: pd.DataFrame) -> tuple[str, str, str]:
-    if forecast_df.empty:
-        return (
-            "No forecast available yet.",
-            "recommend-neutral",
-            "Add more data to activate the household recommendation engine.",
-        )
-
-    avg_delta = forecast_df["DeltaVsToday"].mean()
-    day1_delta = forecast_df.iloc[0]["DeltaVsToday"]
-
-    if day1_delta > 20 or avg_delta > 15:
-        headline = "Frontload flexible electricity use"
-        style = "recommend-warn"
-        body = (
-            "Average prices are expected to increase over the next few days. Consider charging the EV tonight, "
-            "running the dishwasher and laundry sooner rather than later, and avoiding a wait-and-see strategy."
-        )
-    elif day1_delta < -20 or avg_delta < -15:
-        headline = "Wait before using flexible loads"
-        style = "recommend-good"
-        body = (
-            "Prices look softer ahead. Delay EV charging, tumble drying, dishwashing, and other flexible household "
-            "loads if possible, especially if you can shift them into tomorrow or the next low-price window."
-        )
-    else:
-        headline = "Use smart hourly shifting"
-        style = "recommend-neutral"
-        body = (
-            "The next few days look relatively stable on average. Focus on avoiding the most expensive evening hours "
-            "rather than shifting all consumption across days. Overnight and midday use may still offer better value."
-        )
-
-    return headline, style, body
+        return (resp.choices[0].message.content or "").strip()
+    except Exception:
+        return ""
 
 
-def make_price_line_chart(today_df: pd.DataFrame) -> go.Figure:
-    plot_df = today_df.sort_values("TimeDK").copy()
+def prompt_reasoning(fcst: pd.DataFrame, today_avg: float, issue_date: pd.Timestamp) -> str:
+    rows = "\n".join(
+        f"  • {r.Date.strftime('%a %d %b')}: {r.pred_dkk:.0f} DKK/MWh  "
+        f"({r.pred_dkk - today_avg:+.0f} vs today)"
+        for _, r in fcst.iterrows()
+    )
+    return f"""You are an electricity market analyst specialising in Nordic energy markets.
 
+DK1 (West Denmark) XGBoost forecast, issued {issue_date.strftime('%d %b %Y')}:
+Today's average: {today_avg:.0f} DKK/MWh
+
+5-day outlook:
+{rows}
+
+The model's top features: wind speed (10 m & 100 m), shortwave radiation, cloud cover, \
+temperature, pressure, hour-of-day, day-of-week, month, spot-price lags at 24 h, 48 h, 168 h.
+
+Write exactly 4 bullet points (each starting with •) explaining what energy-market dynamics \
+are most likely driving this specific 5-day price pattern. Be concise, factual, and specific \
+to the DK1 market. No preamble or closing sentence."""
+
+
+def prompt_household(fcst: pd.DataFrame, today_avg: float) -> str:
+    rows = "\n".join(
+        f"  • {r.Date.strftime('%A %d %b')}: {r.pred_dkk:.0f} DKK/MWh  "
+        f"({'↑ higher' if r.pred_dkk - today_avg > 20 else '↓ lower' if r.pred_dkk - today_avg < -20 else '→ similar'})"
+        for _, r in fcst.iterrows()
+    )
+    return f"""You are an energy advisor helping a Danish household cut their electricity bill.
+
+DK1 spot price forecast for the next 5 days:
+Today: {today_avg:.0f} DKK/MWh
+{rows}
+
+Write 4-5 bullet points (each starting with •) of specific, actionable advice for:
+- EV charging (best day(s) and time of day)
+- Dishwasher and washing machine
+- Heat pump or electric heating
+- Any other flexible high-consumption appliance
+
+Name the specific days from the forecast. Be direct and practical. No preamble."""
+
+
+# ── Chart helpers ─────────────────────────────────────────────────────────────
+_BASE = dict(
+    template      = "plotly_dark",
+    paper_bgcolor = C["card"],
+    plot_bgcolor  = C["card"],
+    font          = dict(color=C["text"], size=12),
+    margin        = dict(l=10, r=10, t=36, b=10),
+    xaxis         = dict(showgrid=True, gridcolor=C["grid"], zeroline=False, linecolor=C["border"]),
+    yaxis         = dict(showgrid=True, gridcolor=C["grid"], zeroline=False, linecolor=C["border"]),
+    hoverlabel    = dict(bgcolor=C["bg"], bordercolor=C["border"]),
+)
+
+
+def fig_today(hourly: pd.DataFrame, date: pd.Timestamp) -> go.Figure:
     fig = go.Figure()
-    fig.add_trace(
-        go.Scatter(
-            x=plot_df["TimeDK"],
-            y=plot_df["HourlyPriceDKK"],
-            mode="lines+markers",
-            line=dict(color=COLORS["price"], width=3),
-            marker=dict(size=7),
-            name="Spot price",
-            hovertemplate="%{x|%H:%M}<br>%{y:.1f} DKK/MWh<extra></extra>",
-        )
-    )
-
+    fig.add_trace(go.Scatter(
+        x=hourly["Hour"], y=hourly["PriceDKK"],
+        mode="lines+markers",
+        line=dict(color=C["price"], width=3, shape="spline", smoothing=0.7),
+        marker=dict(size=6, color=C["price"]),
+        fill="tozeroy", fillcolor=C["price_fill"],
+        hovertemplate="<b>%{x}:00</b><br>%{y:.0f} DKK/MWh<extra></extra>",
+    ))
+    if not hourly.empty:
+        peak  = hourly.loc[hourly["PriceDKK"].idxmax()]
+        cheap = hourly.loc[hourly["PriceDKK"].idxmin()]
+        for h, lbl, col in [
+            (int(peak["Hour"]),  "Peak",     C["warn"]),
+            (int(cheap["Hour"]), "Cheapest", C["good"]),
+        ]:
+            fig.add_vline(x=h, line_dash="dot", line_color=col, opacity=0.55,
+                          annotation_text=lbl, annotation_font_color=col, annotation_font_size=11)
     fig.update_layout(
-        template="plotly_white",
-        height=360,
-        margin=dict(l=20, r=20, t=20, b=20),
-        xaxis_title="Hour",
+        **_BASE, height=320, showlegend=False,
+        title=dict(text=f"Hourly spot price · {date.strftime('%d %b %Y')}", font_size=13),
+        xaxis=dict(**_BASE["xaxis"], dtick=3, ticksuffix=":00", range=[-0.5, 23.5]),
         yaxis_title="DKK/MWh",
-        paper_bgcolor="white",
-        plot_bgcolor="white",
-        showlegend=False,
     )
     return fig
 
 
-def make_daily_history_chart(daily_df: pd.DataFrame, days_back: int) -> go.Figure:
-    plot_df = daily_df.tail(days_back).copy() if len(daily_df) > days_back else daily_df.copy()
+def fig_history(hist: pd.DataFrame, days_back: int) -> go.Figure:
+    df  = hist.tail(days_back).copy()
     fig = go.Figure()
-    fig.add_trace(
-        go.Scatter(
-            x=plot_df["Date"],
-            y=plot_df["AvgPriceDKK"],
-            mode="lines",
-            line=dict(color=COLORS["price"], width=3),
-            fill="tozeroy",
-            fillcolor="rgba(220,38,38,0.12)",
-            name="Daily average",
-            hovertemplate="%{x|%Y-%m-%d}<br>%{y:.1f} DKK/MWh<extra></extra>",
-        )
-    )
+    fig.add_trace(go.Scatter(
+        x=df["Date"], y=df["AvgDKK"],
+        mode="lines", line=dict(color=C["price"], width=2.5),
+        fill="tozeroy", fillcolor=C["price_fill"],
+        hovertemplate="%{x|%d %b %Y}<br><b>%{y:.0f} DKK/MWh</b><extra></extra>",
+        name="Daily avg",
+    ))
+    if len(df) >= 7:
+        roll = df["AvgDKK"].rolling(30, min_periods=7).mean()
+        fig.add_trace(go.Scatter(
+            x=df["Date"], y=roll,
+            mode="lines", line=dict(color=C["accent"], width=2, dash="dash"),
+            hovertemplate="%{x|%d %b %Y}<br>30d avg: <b>%{y:.0f}</b><extra></extra>",
+            name="30-day avg",
+        ))
     fig.update_layout(
-        template="plotly_white",
-        height=360,
-        margin=dict(l=20, r=20, t=20, b=20),
-        xaxis_title="Date",
-        yaxis_title="Average DKK/MWh",
-        paper_bgcolor="white",
-        plot_bgcolor="white",
-        showlegend=False,
+        **_BASE, height=320,
+        title=dict(text=f"Daily average price · last {days_back} days", font_size=13),
+        legend=dict(orientation="h", y=1.05, x=1, xanchor="right", bgcolor="rgba(0,0,0,0)"),
+        yaxis_title="DKK/MWh",
     )
     return fig
 
 
-def make_forecast_card_row(forecast_df: pd.DataFrame) -> None:
-    cols = st.columns(len(forecast_df))
-    for col, (_, row) in zip(cols, forecast_df.iterrows()):
-        delta = row["DeltaVsToday"]
-        if delta > 0:
-            delta_txt = f"↑ {delta:.1f}"
-            color = COLORS["warn"]
-            emoji = "📈"
-        elif delta < 0:
-            delta_txt = f"↓ {abs(delta):.1f}"
-            color = COLORS["good"]
-            emoji = "📉"
+def fig_context(hist: pd.DataFrame, fcst: pd.DataFrame) -> go.Figure:
+    df  = hist.tail(21).copy()
+    fig = go.Figure()
+
+    fig.add_trace(go.Scatter(
+        x=df["Date"], y=df["AvgDKK"],
+        mode="lines", line=dict(color=C["price"], width=2.5),
+        hovertemplate="%{x|%d %b}<br>Actual: <b>%{y:.0f} DKK/MWh</b><extra></extra>",
+        name="Historical actual",
+    ))
+
+    # Dotted connector: last historical → first forecast
+    if not df.empty and not fcst.empty:
+        fig.add_trace(go.Scatter(
+            x=[df["Date"].iloc[-1], fcst["Date"].iloc[0]],
+            y=[df["AvgDKK"].iloc[-1], fcst["pred_dkk"].iloc[0]],
+            mode="lines", line=dict(color=C["fcst"], width=2, dash="dot"),
+            showlegend=False, hoverinfo="skip",
+        ))
+
+    if not fcst.empty:
+        # XGBoost predicted line
+        fig.add_trace(go.Scatter(
+            x=fcst["Date"], y=fcst["pred_dkk"],
+            mode="lines+markers",
+            line=dict(color=C["fcst"], width=3),
+            marker=dict(size=10, color=C["fcst"]),
+            fill="tozeroy", fillcolor=C["fcst_fill"],
+            hovertemplate="%{x|%d %b}<br>XGBoost: <b>%{y:.0f} DKK/MWh</b><extra></extra>",
+            name="XGBoost forecast",
+        ))
+
+        # Actual prices for the forecast window (comparison)
+        if fcst["actual_dkk"].notna().any():
+            fig.add_trace(go.Scatter(
+                x=fcst["Date"], y=fcst["actual_dkk"],
+                mode="lines+markers",
+                line=dict(color=C["good"], width=2, dash="dot"),
+                marker=dict(size=7, color=C["good"], symbol="diamond"),
+                hovertemplate="%{x|%d %b}<br>Actual (known): <b>%{y:.0f} DKK/MWh</b><extra></extra>",
+                name="Actual (for comparison)",
+            ))
+
+        # Shaded forecast zone
+        fig.add_vrect(
+            x0=fcst["Date"].iloc[0], x1=fcst["Date"].iloc[-1],
+            fillcolor=C["fcst_fill"], layer="below", line_width=0,
+            annotation_text="Forecast window", annotation_position="top left",
+            annotation_font_color=C["fcst"], annotation_font_size=11,
+        )
+
+    fig.update_layout(
+        **_BASE, height=380,
+        title=dict(text="Historical context + XGBoost 5-day forecast", font_size=13),
+        legend=dict(orientation="h", y=1.05, x=1, xanchor="right", bgcolor="rgba(0,0,0,0)"),
+        yaxis_title="DKK/MWh",
+    )
+    return fig
+
+
+# ── Forecast cards ────────────────────────────────────────────────────────────
+def render_forecast_cards(fcst: pd.DataFrame, today_avg: float) -> None:
+    cols = st.columns(len(fcst))
+    for col, (_, row) in zip(cols, fcst.iterrows()):
+        delta = row["pred_dkk"] - today_avg
+        if delta > 25:
+            tag = f"<span class='tag-up'>↑ +{delta:.0f}</span>"
+        elif delta < -25:
+            tag = f"<span class='tag-dn'>↓ {delta:.0f}</span>"
         else:
-            delta_txt = "→ 0.0"
-            color = COLORS["neutral"]
-            emoji = "➖"
+            tag = f"<span class='tag-eq'>→ {delta:+.0f}</span>"
 
-        col.markdown(
-            f"""
-            <div class="metric-card">
-                <div class="small-muted">{row['Date'].strftime('%a %d %b')}</div>
-                <div style="font-size: 1.6rem; font-weight: 700; color: {COLORS['text']}; margin-top: 0.2rem;">
-                    {row['PredictedAvgDKK']:.0f}
-                </div>
-                <div class="small-muted">DKK/MWh</div>
-                <div style="margin-top: 0.6rem; color: {color}; font-weight: 700;">
-                    {emoji} {delta_txt} vs today
-                </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+        col.markdown(f"""
+        <div class="fcard">
+            <div class="kpi-label" style="font-size:.7rem;">{row['Date'].strftime('%a')}</div>
+            <div class="kpi-label">{row['Date'].strftime('%d %b')}</div>
+            <div style="font-size:1.75rem; font-weight:900; color:{C['fcst']};
+                        margin:.25rem 0 .1rem 0;">{row['pred_dkk']:.0f}</div>
+            <div class="kpi-unit">DKK/MWh</div>
+            <div style="margin-top:.55rem;">{tag} vs today</div>
+        </div>
+        """, unsafe_allow_html=True)
 
 
-def make_supply_reasoning_chart(daily_supply: pd.DataFrame) -> go.Figure:
-    plot_df = daily_supply.tail(21).copy()
-    fig = go.Figure()
-
-    if "Solar" in plot_df.columns:
-        fig.add_trace(
-            go.Scatter(
-                x=plot_df["Date"],
-                y=plot_df["Solar"],
-                mode="lines",
-                name="☀️ Solar",
-                line=dict(color=COLORS["solar"], width=3),
-            )
-        )
-    if "Onshore Wind" in plot_df.columns:
-        fig.add_trace(
-            go.Scatter(
-                x=plot_df["Date"],
-                y=plot_df["Onshore Wind"],
-                mode="lines",
-                name="🌿 Onshore wind",
-                line=dict(color=COLORS["wind_onshore"], width=3),
-            )
-        )
-    if "Offshore Wind" in plot_df.columns:
-        fig.add_trace(
-            go.Scatter(
-                x=plot_df["Date"],
-                y=plot_df["Offshore Wind"],
-                mode="lines",
-                name="🌊 Offshore wind",
-                line=dict(color=COLORS["wind_offshore"], width=3),
-            )
-        )
-
-    fig.update_layout(
-        template="plotly_white",
-        height=380,
-        margin=dict(l=20, r=20, t=20, b=20),
-        xaxis_title="Date",
-        yaxis_title="MWh/h",
-        legend_title="Supply source",
-        paper_bgcolor="white",
-        plot_bgcolor="white",
-    )
-    return fig
-
-
-def make_consumption_reasoning_chart(daily_consumption: pd.DataFrame) -> go.Figure:
-    plot_df = daily_consumption.tail(21).copy()
-    fig = go.Figure()
-    fig.add_trace(
-        go.Bar(
-            x=plot_df["Date"],
-            y=plot_df["AvgConsumptionkWh"],
-            name="🏠 Consumption",
-            marker_color=COLORS["consumption"],
-            opacity=0.85,
-        )
-    )
-    fig.update_layout(
-        template="plotly_white",
-        height=380,
-        margin=dict(l=20, r=20, t=20, b=20),
-        xaxis_title="Date",
-        yaxis_title="Average kWh",
-        paper_bgcolor="white",
-        plot_bgcolor="white",
-        showlegend=False,
-    )
-    return fig
-
-
-def render_header(latest_ts: Optional[pd.Timestamp]) -> None:
-    st.title("⚡ DK1 Home Energy Planner")
-    st.caption(
-        "Internal prototype for household-oriented energy planning. Uses raw data already present in the repository and refreshes daily."
-    )
-
-    col1, col2, col3 = st.columns([2.2, 1.2, 1.2])
-    with col1:
-        st.markdown(
-            f"""
-            <div class="section-card">
-                <div style="font-size: 1.15rem; font-weight: 700;">Today’s spot market overview</div>
-                <div class="small-muted" style="margin-top: 0.3rem;">
-                    Focus area: {PRICE_AREA} · Refresh cadence: {REFRESH_FREQUENCY}
-                </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-    with col2:
-        last_str = latest_ts.strftime("%Y-%m-%d %H:%M") if latest_ts is not None else "n/a"
-        st.markdown(
-            f"""
-            <div class="metric-card">
-                <div class="small-muted">Latest data point</div>
-                <div style="font-size: 1.2rem; font-weight: 700; margin-top: 0.3rem;">{last_str}</div>
-                <div class="small-muted">Danish local time</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-    with col3:
-        st.markdown(
-            f"""
-            <div class="metric-card">
-                <div class="small-muted">Audience</div>
-                <div style="font-size: 1.2rem; font-weight: 700; margin-top: 0.3rem;">Private households</div>
-                <div class="small-muted">Simple guidance for flexible home loads</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-
-def render_data_status(prices: pd.DataFrame, consumption: pd.DataFrame, supply: pd.DataFrame) -> None:
+# ── Sidebar ───────────────────────────────────────────────────────────────────
+def render_sidebar(
+    prices: pd.DataFrame,
+    fcst: pd.DataFrame,
+    metrics: pd.DataFrame,
+) -> tuple[int, bool]:
     with st.sidebar:
-        st.header("Data status")
-        st.write(f"**Prices:** {'Loaded' if not prices.empty else 'Missing'}")
-        st.write(f"**Consumption:** {'Loaded' if not consumption.empty else 'Missing'}")
-        st.write(f"**Supply forecasts:** {'Loaded' if not supply.empty else 'Missing'}")
-        st.caption("This first version reads the raw CSV files already present in the repository.")
-        days_back = st.selectbox("History window", options=[30, 90, 180, 365], index=1)
-        show_raw_preview = st.checkbox("Show raw data preview", value=False)
-    return days_back, show_raw_preview
+        st.markdown(f"""
+        <div style="padding:.3rem 0 1rem 0;">
+            <div style="font-size:1.4rem; font-weight:900; color:{C['accent']};">⚡ DK1 Energy</div>
+            <div style="color:{C['muted']}; font-size:.78rem; margin-top:.2rem;">
+                XGBoost · Groq AI · Streamlit
+            </div>
+        </div>""", unsafe_allow_html=True)
+
+        st.markdown("**Data status**")
+        try:
+            groq_ok = bool(st.secrets.get("GROQ_API_KEY", ""))
+        except Exception:
+            groq_ok = False
+
+        for label, ok, note in [
+            ("Price data",      not prices.empty, f"{len(prices):,} rows" if not prices.empty else "missing"),
+            ("Model forecasts", not fcst.empty,   "predictions.parquet"),
+            ("Groq AI",         groq_ok,          "API key configured" if groq_ok else "add key to secrets"),
+        ]:
+            dot = "🟢" if ok else "🔴"
+            st.markdown(
+                f"{dot} **{label}**  \n"
+                f"<span style='color:{C['muted']};font-size:.76rem;'>{note}</span>",
+                unsafe_allow_html=True,
+            )
+
+        st.divider()
+
+        days_back = st.select_slider(
+            "History window",
+            options=[30, 60, 90, 180, 365],
+            value=90,
+            format_func=lambda x: f"{x} days",
+        )
+        show_raw = st.checkbox("Show raw data tables", value=False)
+
+        if not metrics.empty:
+            st.divider()
+            st.markdown("**XGBoost accuracy (3 recent folds)**")
+            recent = metrics.tail(3)
+            for day in range(1, 6):
+                col_name = f"day{day}_mae"
+                if col_name in recent.columns:
+                    mae = recent[col_name].mean()
+                    st.markdown(
+                        f"<span style='color:{C['muted']};font-size:.76rem;'>Day {day}</span> "
+                        f"**{mae:.1f}** "
+                        f"<span style='color:{C['muted']};font-size:.76rem;'>EUR/MWh MAE</span>",
+                        unsafe_allow_html=True,
+                    )
+
+        st.divider()
+        st.caption("Energi Data Service · DK1 West Denmark\nPrices in DKK/MWh")
+
+    return days_back, show_raw
 
 
-def render_main_dashboard() -> None:
-    apply_page_style()
+# ── Main dashboard ────────────────────────────────────────────────────────────
+def main() -> None:
+    setup_page()
 
-    prices = load_prices(PRICE_FILE)
-    consumption = load_consumption(CONSUMPTION_FILE)
-    supply = load_supply(SUPPLY_FILE)
+    with st.spinner("Loading data…"):
+        prices  = load_prices()
+        raw_preds = load_raw_predictions()
+        metrics = load_metrics()
 
-    st.write("PRICE_FILE exists:", PRICE_FILE.exists())
-    st.write("PRICE_FILE path:", str(PRICE_FILE))
+    eur_dkk = compute_eur_dkk(prices)
+    fcst    = process_predictions(raw_preds, eur_dkk)
+    hist    = daily_history(prices)
 
-    if PRICE_FILE.exists():
-        raw_prices = pd.read_csv(PRICE_FILE)
-        st.write("Raw price columns:", raw_prices.columns.tolist())
-        st.text(raw_prices.head(10).to_string())
+    days_back, show_raw = render_sidebar(prices, fcst, metrics)
 
-    daily_prices = compute_daily_price_history(prices)
-    today_prices, latest_ts = get_today_hourly_prices(prices)
-    daily_supply = build_supply_daily_features(supply)
-    daily_consumption = build_consumption_daily_features(consumption)
-    forecast_df = build_placeholder_forecast(daily_prices, daily_supply, daily_consumption, horizon_days=5)
+    # Anchor "today" to the model's latest issue date for a consistent time story
+    if not fcst.empty:
+        today_date = fcst["issue_date"].iloc[0]
+    elif not prices.empty:
+        today_date = prices["Date"].max()
+    else:
+        today_date = None
 
-    days_back, show_raw_preview = render_data_status(prices, consumption, supply)
-    render_header(latest_ts)
+    today_prices = (
+        prices[prices["Date"] == today_date]
+        if today_date is not None and not prices.empty
+        else pd.DataFrame()
+    )
+    today_avg = today_prices["PriceDKK"].mean() if not today_prices.empty else np.nan
+    today_min = today_prices["PriceDKK"].min()  if not today_prices.empty else np.nan
+    today_max = today_prices["PriceDKK"].max()  if not today_prices.empty else np.nan
+    fcst_avg  = fcst["pred_dkk"].mean()          if not fcst.empty         else np.nan
+
+    # ── Header ────────────────────────────────────────────────────────────────
+    date_str  = today_date.strftime("%A, %d %B %Y") if today_date else "n/a"
+    issue_str = fcst["issue_date"].iloc[0].strftime("%d %b %Y") if not fcst.empty else "n/a"
+
+    st.markdown(f"""
+    <h1 style="margin:0; font-size:2.1rem; font-weight:900; color:{C['text']};">
+        ⚡ DK1 Energy Planner
+    </h1>
+    <p style="color:{C['muted']}; margin:.3rem 0 1.2rem 0; font-size:.88rem;">
+        Reference date:&nbsp;<strong style="color:{C['accent']};">{date_str}</strong>
+        &nbsp;·&nbsp;XGBoost model run:&nbsp;<strong>{issue_str}</strong>
+        &nbsp;·&nbsp;Price area:&nbsp;<strong>DK1 West Denmark</strong>
+    </p>
+    """, unsafe_allow_html=True)
 
     if prices.empty:
-        st.error("No day-ahead price file was found or could be parsed. Add data/day_ahead_prices_dk1_raw.csv to continue.")
+        st.error("Price data not found. Add `data/day_ahead_prices_dk1_raw.csv`.")
         return
 
-    today_avg = today_prices["HourlyPriceDKK"].mean() if not today_prices.empty else np.nan
-    today_min = today_prices["HourlyPriceDKK"].min() if not today_prices.empty else np.nan
-    today_max = today_prices["HourlyPriceDKK"].max() if not today_prices.empty else np.nan
-
-    c1, c2, c3 = st.columns(3)
-    for c, title, value in [
-        (c1, "Today average", today_avg),
-        (c2, "Today minimum", today_min),
-        (c3, "Today maximum", today_max),
+    # ── KPI cards ─────────────────────────────────────────────────────────────
+    k1, k2, k3, k4 = st.columns(4)
+    for col, label, value, unit, color in [
+        (k1, "Today's average price",     today_avg, "DKK/MWh",               C["price"]),
+        (k2, "Today's minimum",           today_min, "DKK/MWh",               C["good"]),
+        (k3, "Today's maximum",           today_max, "DKK/MWh",               C["warn"]),
+        (k4, "5-day forecast avg · XGBoost", fcst_avg, "DKK/MWh predicted",   C["fcst"]),
     ]:
-        c.markdown(
-            f"""
-            <div class="metric-card">
-                <div class="small-muted">{title}</div>
-                <div style="font-size: 1.9rem; font-weight: 800; color: {COLORS['price']}; margin-top: 0.35rem;">
-                    {(f"{value:.0f}" if pd.notna(value) else "n/a")}
-                </div>
-                <div class="small-muted">DKK/MWh</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+        val_str = f"{value:.0f}" if pd.notna(value) else "–"
+        col.markdown(f"""
+        <div class="kpi">
+            <div class="kpi-label">{label}</div>
+            <div class="kpi-val" style="color:{color};">{val_str}</div>
+            <div class="kpi-unit">{unit}</div>
+        </div>""", unsafe_allow_html=True)
 
-    left, right = st.columns([1.05, 1.15])
+    # ── Today's hourly + historic daily ──────────────────────────────────────
+    st.markdown("<div class='section'>Current day &amp; historical prices</div>", unsafe_allow_html=True)
+    c_tod, c_hist_col = st.columns(2)
 
-    with left:
-        st.markdown('<div class="section-card"><h4>📅 Current day hourly spot price</h4></div>', unsafe_allow_html=True)
+    with c_tod:
         if today_prices.empty:
-            st.info("No hourly prices available for the latest day in the file.")
+            st.info("No hourly price data available for the reference date.")
         else:
-            st.plotly_chart(make_price_line_chart(today_prices), use_container_width=True)
+            hourly = today_prices.groupby("Hour", as_index=False)["PriceDKK"].mean()
+            st.plotly_chart(
+                fig_today(hourly, today_date),
+                use_container_width=True, config={"displayModeBar": False},
+            )
 
-    with right:
-        st.markdown('<div class="section-card"><h4>📚 Historic daily average spot price</h4></div>', unsafe_allow_html=True)
-        st.plotly_chart(make_daily_history_chart(daily_prices, days_back=days_back), use_container_width=True)
-
-    st.markdown('<div class="section-card"><h4>🔮 Placeholder prediction: next 1–5 days average price</h4></div>', unsafe_allow_html=True)
-    make_forecast_card_row(forecast_df)
-
-    headline, style, body = generate_recommendation_text(forecast_df)
-    st.markdown(
-        f"""
-        <div class="section-card">
-            <h4>🏠 What should a household do?</h4>
-            <p class="{style}" style="font-size: 1.1rem; margin-bottom: 0.2rem;">{headline}</p>
-            <p style="margin-top: 0.2rem;">{body}</p>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    reasoning_left, reasoning_right = st.columns(2)
-    with reasoning_left:
-        st.markdown('<div class="section-card"><h4>🌤️ Why the forecast looks like this: supply outlook</h4></div>', unsafe_allow_html=True)
-        if daily_supply.empty:
-            st.info("No supply forecast file available yet.")
+    with c_hist_col:
+        hist_filtered = hist[hist["Date"] <= today_date] if today_date is not None else hist
+        if hist_filtered.empty:
+            st.info("No historical price data available.")
         else:
-            st.plotly_chart(make_supply_reasoning_chart(daily_supply), use_container_width=True)
-            st.caption("Solar is shown in amber, onshore wind in teal, and offshore wind in blue.")
+            st.plotly_chart(
+                fig_history(hist_filtered, days_back),
+                use_container_width=True, config={"displayModeBar": False},
+            )
 
-    with reasoning_right:
-        st.markdown('<div class="section-card"><h4>👪 Demand pressure: consumption background</h4></div>', unsafe_allow_html=True)
-        if daily_consumption.empty:
-            st.info("No consumption file available yet.")
-        else:
-            st.plotly_chart(make_consumption_reasoning_chart(daily_consumption), use_container_width=True)
-            st.caption("This is currently a simple daily-average demand background signal used for intuition, not a full predictive feature view.")
+    # ── XGBoost 5-day forecast ────────────────────────────────────────────────
+    st.markdown("<div class='section'>XGBoost 5-day spot price forecast</div>", unsafe_allow_html=True)
 
-    if not forecast_df.empty:
-        st.markdown('<div class="section-card"><h4>🧠 Forecast reasoning summary</h4></div>', unsafe_allow_html=True)
-        bullets = "\n".join(
-            [f"- **{row.Date.strftime('%a %d %b')}**: {row.Reason}" for _, row in forecast_df.iterrows()]
+    if fcst.empty:
+        st.info("No forecast data found. Add `outputs/model/predictions.parquet`.")
+    else:
+        render_forecast_cards(fcst, today_avg)
+
+        st.markdown("<div style='height:.5rem;'></div>", unsafe_allow_html=True)
+        st.markdown("<div class='section'>Historical context + XGBoost forecast</div>", unsafe_allow_html=True)
+
+        hist_for_ctx = hist[hist["Date"] <= today_date] if today_date is not None else hist
+        st.plotly_chart(
+            fig_context(hist_for_ctx, fcst),
+            use_container_width=True, config={"displayModeBar": False},
         )
-        st.markdown(bullets)
 
-    if show_raw_preview:
-        st.markdown('<div class="section-card"><h4>🔎 Raw data preview</h4></div>', unsafe_allow_html=True)
-        tab1, tab2, tab3 = st.tabs(["Prices", "Consumption", "Supply forecasts"])
-        with tab1:
-            st.dataframe(prices.tail(20), use_container_width=True)
-        with tab2:
-            st.dataframe(consumption.tail(20), use_container_width=True)
-        with tab3:
-            st.dataframe(supply.tail(20), use_container_width=True)
+    # ── Groq AI section ───────────────────────────────────────────────────────
+    st.markdown("<div class='section'>AI insights · Groq Llama 3.3 70B</div>", unsafe_allow_html=True)
+
+    ai_l, ai_r = st.columns(2)
+
+    with ai_l:
+        with st.container(border=True):
+            st.markdown(
+                f"<div style='font-size:.95rem; font-weight:700; color:{C['accent']};"
+                f" margin-bottom:.5rem;'>🔮 Forecast reasoning summary</div>",
+                unsafe_allow_html=True,
+            )
+            if fcst.empty or pd.isna(today_avg):
+                st.info("Forecast data required.")
+            else:
+                if st.button("Generate forecast reasoning", key="btn_r", type="primary"):
+                    with st.spinner("Asking Groq…"):
+                        text = groq_call(prompt_reasoning(fcst, today_avg, fcst["issue_date"].iloc[0]))
+                        st.session_state["_r"] = text
+
+                if "_r" in st.session_state:
+                    if st.session_state["_r"]:
+                        st.markdown(st.session_state["_r"])
+                    else:
+                        st.warning("Groq API unreachable — add `GROQ_API_KEY` to Streamlit secrets.")
+                else:
+                    st.caption(
+                        "Generates a 4-bullet AI analysis of what market dynamics are driving "
+                        "the 5-day price pattern (wind, demand, seasonal effects, etc.)."
+                    )
+
+    with ai_r:
+        with st.container(border=True):
+            st.markdown(
+                f"<div style='font-size:.95rem; font-weight:700; color:{C['good']};"
+                f" margin-bottom:.5rem;'>🏠 Household guidance</div>",
+                unsafe_allow_html=True,
+            )
+            if fcst.empty or pd.isna(today_avg):
+                st.info("Forecast data required.")
+            else:
+                if st.button("Generate household tips", key="btn_h", type="primary"):
+                    with st.spinner("Asking Groq…"):
+                        text = groq_call(prompt_household(fcst, today_avg))
+                        st.session_state["_h"] = text
+
+                if "_h" in st.session_state:
+                    if st.session_state["_h"]:
+                        st.markdown(st.session_state["_h"])
+                    else:
+                        st.warning("Groq API unreachable — add `GROQ_API_KEY` to Streamlit secrets.")
+                else:
+                    st.caption(
+                        "Generates actionable tips on when to run your EV charger, dishwasher, "
+                        "heat pump, and other flexible loads based on the 5-day price forecast."
+                    )
+
+    # ── Raw data tables ───────────────────────────────────────────────────────
+    if show_raw:
+        st.markdown("<div class='section'>Raw data</div>", unsafe_allow_html=True)
+        t1, t2, t3 = st.tabs(["Price history (last 100)", "XGBoost forecast", "Model metrics"])
+        with t1:
+            st.dataframe(prices.tail(100), use_container_width=True)
+        with t2:
+            st.dataframe(fcst, use_container_width=True)
+        with t3:
+            st.dataframe(metrics, use_container_width=True)
 
 
 if __name__ == "__main__":
-    render_main_dashboard()
+    main()
