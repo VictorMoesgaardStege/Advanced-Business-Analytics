@@ -130,14 +130,24 @@ def compute_eur_dkk(prices: pd.DataFrame) -> float:
     return float((valid["PriceDKK"] / valid["PriceEUR"]).tail(24 * 90).median())
 
 
-def process_predictions(raw: pd.DataFrame, eur_dkk: float) -> pd.DataFrame:
-    """Aggregate latest fold's hourly predictions to 5 daily forecasts."""
+def _resolve_issue_time(raw: pd.DataFrame, selected: pd.Timestamp | None) -> pd.Timestamp:
+    """Return the closest available issue_time to `selected`, or the latest if None."""
+    if selected is None:
+        return pd.Timestamp(raw["issue_time"].max())
+    available = pd.to_datetime(raw["issue_time"].unique())
+    return min(available, key=lambda x: abs(x - selected))
+
+
+def process_predictions(
+    raw: pd.DataFrame, eur_dkk: float, selected: pd.Timestamp | None = None
+) -> pd.DataFrame:
+    """Aggregate selected issue_time's hourly predictions to 5 daily forecasts."""
     if raw.empty:
         return pd.DataFrame()
 
-    latest_issue = raw["issue_time"].max()
-    issue_date   = pd.Timestamp(latest_issue).normalize()
-    sub          = raw[raw["issue_time"] == latest_issue].copy()
+    issue_ts   = _resolve_issue_time(raw, selected)
+    issue_date = issue_ts.normalize()
+    sub        = raw[raw["issue_time"] == issue_ts].copy()
     sub["target_date"] = sub["target_time"].dt.normalize()
 
     future = sub[sub["target_date"] > issue_date]
@@ -154,19 +164,20 @@ def process_predictions(raw: pd.DataFrame, eur_dkk: float) -> pd.DataFrame:
     return daily
 
 
-def process_predictions_hourly(raw: pd.DataFrame, eur_dkk: float) -> pd.DataFrame:
-    """Return all 120 hourly predictions for the latest issue_time."""
+def process_predictions_hourly(
+    raw: pd.DataFrame, eur_dkk: float, selected: pd.Timestamp | None = None
+) -> pd.DataFrame:
+    """Return all 120 hourly predictions for the selected issue_time."""
     if raw.empty:
         return pd.DataFrame()
 
-    latest_issue = raw["issue_time"].max()
-    issue_dt     = pd.Timestamp(latest_issue)
-    sub          = raw[raw["issue_time"] == latest_issue].copy()
+    issue_ts = _resolve_issue_time(raw, selected)
+    sub      = raw[raw["issue_time"] == issue_ts].copy()
 
-    future = sub[sub["target_time"] > issue_dt].sort_values("target_time").head(120)
+    future = sub[sub["target_time"] > issue_ts].sort_values("target_time").head(120)
     future["pred_dkk"]   = future["predicted"]        * eur_dkk
     future["actual_dkk"] = future["DayAheadPriceEUR"] * eur_dkk
-    future["issue_date"] = issue_dt.normalize()
+    future["issue_date"] = issue_ts.normalize()
     return future[["target_time", "horizon_h", "pred_dkk", "actual_dkk", "issue_date"]].reset_index(drop=True)
 
 
@@ -320,6 +331,7 @@ def fig_context(
     hourly_fcst: pd.DataFrame,
     ctx_days: int,
     cutoff: pd.Timestamp | None = None,
+    show_actuals: bool = True,
 ) -> go.Figure:
     """Last ctx_days of hourly actuals + 120-hour XGBoost forecast at hourly resolution."""
     # hist_end = first forecast target hour (exclusive), so there is no overlap
@@ -360,8 +372,8 @@ def fig_context(
             name="XGBoost forecast",
         ))
 
-        # Actual prices for the forecast window
-        if hourly_fcst["actual_dkk"].notna().any():
+        # Actual prices for the forecast window (optional overlay)
+        if show_actuals and hourly_fcst["actual_dkk"].notna().any():
             fig.add_trace(go.Scatter(
                 x=hourly_fcst["target_time"], y=hourly_fcst["actual_dkk"],
                 mode="lines",
@@ -417,7 +429,8 @@ def render_sidebar(
     prices: pd.DataFrame,
     fcst: pd.DataFrame,
     metrics: pd.DataFrame,
-) -> tuple[int, bool]:
+    raw_preds: pd.DataFrame,
+) -> tuple[int, int, bool, pd.Timestamp, bool]:
     with st.sidebar:
         st.markdown(f"""
         <div style="padding:.3rem 0 1rem 0;">
@@ -459,6 +472,26 @@ def render_sidebar(
             value=7,
             format_func=lambda x: f"{x} days",
         )
+
+        # Forecast window date picker
+        st.divider()
+        st.markdown("**Forecast window**")
+        if not raw_preds.empty:
+            issue_dates = sorted(raw_preds["issue_time"].dt.normalize().unique())
+            min_d = issue_dates[0].date()
+            max_d = issue_dates[-1].date()
+            picked = st.date_input(
+                "Issue date",
+                value=max_d,
+                min_value=min_d,
+                max_value=max_d,
+                help="Select any date to view the 5-day forecast issued on that day.",
+            )
+            selected_issue = pd.Timestamp(picked)
+        else:
+            selected_issue = None
+        show_actuals = st.checkbox("Show actual prices in forecast period", value=True)
+
         show_raw = st.checkbox("Show raw data tables", value=False)
 
         if not metrics.empty:
@@ -479,7 +512,7 @@ def render_sidebar(
         st.divider()
         st.caption("Energi Data Service · DK1 West Denmark\nPrices in DKK/MWh")
 
-    return days_back, ctx_days, show_raw
+    return days_back, ctx_days, show_raw, selected_issue, show_actuals
 
 
 # ── Main dashboard ────────────────────────────────────────────────────────────
@@ -491,12 +524,16 @@ def main() -> None:
         raw_preds = load_raw_predictions()
         metrics = load_metrics()
 
-    eur_dkk      = compute_eur_dkk(prices)
-    fcst         = process_predictions(raw_preds, eur_dkk)
-    hourly_fcst  = process_predictions_hourly(raw_preds, eur_dkk)
-    hist         = daily_history(prices)
+    eur_dkk = compute_eur_dkk(prices)
 
-    days_back, ctx_days, show_raw = render_sidebar(prices, fcst, metrics)
+    # Sidebar first so selected_issue is known before building forecasts
+    days_back, ctx_days, show_raw, selected_issue, show_actuals = render_sidebar(
+        prices, pd.DataFrame(), metrics, raw_preds
+    )
+
+    fcst        = process_predictions(raw_preds, eur_dkk, selected_issue)
+    hourly_fcst = process_predictions_hourly(raw_preds, eur_dkk, selected_issue)
+    hist        = daily_history(prices)
 
     # Anchor "today" to the model's latest issue date for a consistent time story
     if not fcst.empty:
@@ -587,7 +624,7 @@ def main() -> None:
         st.markdown("<div class='section'>Historical context + XGBoost forecast</div>", unsafe_allow_html=True)
 
         st.plotly_chart(
-            fig_context(prices, hourly_fcst, ctx_days, cutoff=today_date),
+            fig_context(prices, hourly_fcst, ctx_days, cutoff=today_date, show_actuals=show_actuals),
             use_container_width=True, config={"displayModeBar": False},
         )
 
