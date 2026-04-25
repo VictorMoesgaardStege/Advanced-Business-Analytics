@@ -606,9 +606,14 @@ def main() -> None:
         if today_date is not None and not prices.empty
         else pd.DataFrame()
     )
-    today_avg = today_prices["PriceDKK"].mean() if not today_prices.empty else np.nan
-    today_min = today_prices["PriceDKK"].min()  if not today_prices.empty else np.nan
-    today_max = today_prices["PriceDKK"].max()  if not today_prices.empty else np.nan
+    # Aggregate to hourly so KPIs match the chart (raw data has 15-min intervals)
+    today_hourly = (
+        today_prices.groupby("Hour", as_index=False)["PriceDKK"].mean()
+        if not today_prices.empty else pd.DataFrame()
+    )
+    today_avg = today_hourly["PriceDKK"].mean() if not today_hourly.empty else np.nan
+    today_min = today_hourly["PriceDKK"].min()  if not today_hourly.empty else np.nan
+    today_max = today_hourly["PriceDKK"].max()  if not today_hourly.empty else np.nan
     fcst_avg  = fcst["pred_dkk"].mean()          if not fcst.empty         else np.nan
 
     # ── Header ────────────────────────────────────────────────────────────────
@@ -654,9 +659,8 @@ def main() -> None:
         if today_prices.empty:
             st.info("No hourly price data available for the reference date.")
         else:
-            hourly = today_prices.groupby("Hour", as_index=False)["PriceDKK"].mean()
             st.plotly_chart(
-                fig_today(hourly, today_date),
+                fig_today(today_hourly, today_date),
                 use_container_width=True, config={"displayModeBar": False},
             )
 
