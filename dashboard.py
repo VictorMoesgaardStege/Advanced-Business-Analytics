@@ -12,7 +12,9 @@ DATA_DIR    = Path("data")
 PRICE_FILE  = DATA_DIR / "day_ahead_prices_dk1_raw.csv"
 PRED_FILE    = Path("outputs/model/predictions.parquet")
 METRICS_FILE = Path("outputs/model/metrics.csv")
-MODEL_FILE   = Path("outputs/model/final_day_models.joblib")
+MODEL_FILE        = Path("outputs/model/final_day_models.joblib")
+SHAP_VALUES_FILE  = Path("outputs/model/shap_day1_values.parquet")
+SHAP_FEATURES_FILE = Path("outputs/model/shap_day1_features.parquet")
 PRICE_AREA  = "DK1"
 EUR_DKK_FB  = 7.46   # fallback exchange rate
 
@@ -135,6 +137,17 @@ def load_feature_importance() -> pd.DataFrame:
         return df.sort_values("importance", ascending=False).reset_index(drop=True)
     except Exception:
         return pd.DataFrame()
+
+
+@st.cache_data(show_spinner=False)
+def load_shap_data() -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Load pre-computed SHAP values and features for the Day 1 model."""
+    if not SHAP_VALUES_FILE.exists() or not SHAP_FEATURES_FILE.exists():
+        return pd.DataFrame(), pd.DataFrame()
+    try:
+        return pd.read_parquet(SHAP_VALUES_FILE), pd.read_parquet(SHAP_FEATURES_FILE)
+    except Exception:
+        return pd.DataFrame(), pd.DataFrame()
 
 
 # ── Data processing ───────────────────────────────────────────────────────────
@@ -458,6 +471,69 @@ def fig_feature_importance(imp_df: pd.DataFrame, top_n: int = 5) -> go.Figure:
     return fig
 
 
+def fig_shap(shap_vals: pd.DataFrame, shap_feat: pd.DataFrame, top_n: int = 8) -> go.Figure:
+    """Beeswarm-style SHAP scatter: x=SHAP value, y=feature, colour=feature magnitude."""
+    def clean(name: str) -> str:
+        return name.replace("fcst_", "").replace("_", " ").title()
+
+    mean_abs  = shap_vals.abs().mean().sort_values(ascending=False)
+    top_feats = mean_abs.head(top_n).index.tolist()
+
+    rng = np.random.default_rng(42)
+    fig = go.Figure()
+
+    # Iterate bottom → top so highest-importance feature renders at top of y-axis
+    for i, feat in enumerate(reversed(top_feats)):
+        sv    = shap_vals[feat].values
+        fv    = shap_feat[feat].values
+        fv_n  = (fv - fv.min()) / (fv.max() - fv.min() + 1e-8)
+        jit   = rng.uniform(-0.35, 0.35, size=len(sv))
+
+        show_cb = (i == top_n - 1)  # only one colorbar on the topmost trace
+        fig.add_trace(go.Scatter(
+            x=sv,
+            y=np.full(len(sv), i) + jit,
+            mode="markers",
+            marker=dict(
+                color=fv_n,
+                colorscale="RdBu_r",
+                cmin=0, cmax=1,
+                size=4,
+                opacity=0.65,
+                showscale=show_cb,
+                colorbar=dict(
+                    title=dict(text="Feature value", font=dict(size=10)),
+                    tickvals=[0, 0.5, 1],
+                    ticktext=["Low", "Mid", "High"],
+                    tickfont=dict(size=9),
+                    thickness=10,
+                    len=0.55,
+                    x=1.02,
+                ) if show_cb else None,
+            ),
+            hovertemplate=f"{clean(feat)}<br>SHAP: <b>%{{x:.3f}}</b><extra></extra>",
+            showlegend=False,
+        ))
+
+    feat_labels = [clean(f) for f in reversed(top_feats)]
+    fig.update_layout(**{
+        **_BASE,
+        "height": 380,
+        "showlegend": False,
+        "title": dict(text="SHAP values · XGBoost Day 1 model  (red = high feature value, blue = low)", font_size=13),
+        "xaxis": dict(**_BASE["xaxis"], title="SHAP value (EUR/MWh impact)", zeroline=True, zerolinecolor=C["border"]),
+        "yaxis": dict(
+            **_BASE["yaxis"],
+            tickmode="array",
+            tickvals=list(range(top_n)),
+            ticktext=feat_labels,
+            showgrid=False,
+        ),
+        "margin": dict(l=10, r=20, t=42, b=10),
+    })
+    return fig
+
+
 # ── Forecast cards ────────────────────────────────────────────────────────────
 def render_forecast_cards(fcst: pd.DataFrame, today_avg: float) -> None:
     cols = st.columns(len(fcst))
@@ -690,16 +766,34 @@ def main() -> None:
             use_container_width=True, config={"displayModeBar": False},
         )
 
-    # ── Feature importance ────────────────────────────────────────────────────
-    imp_df = load_feature_importance()
-    if not imp_df.empty:
-        st.markdown("<div class='section'>XGBoost feature importance</div>", unsafe_allow_html=True)
-        fi_col, _ = st.columns([1, 1])
+    # ── Feature importance + SHAP ─────────────────────────────────────────────
+    imp_df              = load_feature_importance()
+    shap_vals, shap_feat = load_shap_data()
+
+    has_imp  = not imp_df.empty
+    has_shap = not shap_vals.empty and not shap_feat.empty
+
+    if has_imp or has_shap:
+        st.markdown("<div class='section'>XGBoost model insights · Day 1 model</div>", unsafe_allow_html=True)
+        fi_col, shap_col = st.columns(2)
+
         with fi_col:
-            st.plotly_chart(
-                fig_feature_importance(imp_df),
-                use_container_width=True, config={"displayModeBar": False},
-            )
+            if has_imp:
+                st.plotly_chart(
+                    fig_feature_importance(imp_df),
+                    use_container_width=True, config={"displayModeBar": False},
+                )
+            else:
+                st.info("Feature importance unavailable — run `XG_Boost_full_Res.py` to generate `final_day_models.joblib`.")
+
+        with shap_col:
+            if has_shap:
+                st.plotly_chart(
+                    fig_shap(shap_vals, shap_feat),
+                    use_container_width=True, config={"displayModeBar": False},
+                )
+            else:
+                st.info("SHAP data unavailable — run `XG_Boost_full_Res.py` to generate `shap_day1_*.parquet`.")
 
     # ── Groq AI section ───────────────────────────────────────────────────────
     st.markdown("<div class='section'>AI insights · Groq Llama 3.3 70B</div>", unsafe_allow_html=True)
