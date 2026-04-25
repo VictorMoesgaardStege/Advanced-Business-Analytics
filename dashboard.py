@@ -522,13 +522,13 @@ def fig_shap(shap_vals: pd.DataFrame, shap_feat: pd.DataFrame, top_n: int = 8) -
         "showlegend": False,
         "title": dict(text="SHAP values · XGBoost Day 1 model  (red = high feature value, blue = low)", font_size=13),
         "xaxis": dict(**{**_BASE["xaxis"], "zeroline": True, "zerolinecolor": C["border"]}, title="SHAP value (EUR/MWh impact)"),
-        "yaxis": dict(
+        "yaxis": dict(**{
             **_BASE["yaxis"],
-            tickmode="array",
-            tickvals=list(range(top_n)),
-            ticktext=feat_labels,
-            showgrid=False,
-        ),
+            "showgrid": False,
+            "tickmode": "array",
+            "tickvals": list(range(top_n)),
+            "ticktext": feat_labels,
+        }),
         "margin": dict(l=10, r=20, t=42, b=10),
     })
     return fig
