@@ -476,8 +476,8 @@ def render_forecast_cards(fcst: pd.DataFrame, today_avg: float) -> None:
             <div class="kpi-label">{row['Date'].strftime('%d %b')}</div>
             <div style="font-size:1.75rem; font-weight:900; color:{C['fcst']};
                         margin:.25rem 0 .1rem 0;">{row['pred_dkk']:.0f}</div>
-            <div class="kpi-unit">DKK/MWh</div>
-            <div style="margin-top:.55rem;">{tag} vs today</div>
+            <div class="kpi-unit">DKK/MWh · daily avg</div>
+            <div style="margin-top:.55rem;">{tag} vs today avg</div>
         </div>
         """, unsafe_allow_html=True)
 
