@@ -465,7 +465,7 @@ def fig_feature_importance(imp_df: pd.DataFrame, top_n: int = 5) -> go.Figure:
         "showlegend": False,
         "title": dict(text="Top 5 feature importances · XGBoost Day 1 model (h=1–24)", font_size=13),
         "xaxis": dict(**_BASE["xaxis"], title="Gain importance"),
-        "yaxis": dict(**_BASE["yaxis"], showgrid=False),
+        "yaxis": dict(**{**_BASE["yaxis"], "showgrid": False}),
         "margin": dict(l=10, r=10, t=36, b=10),
     })
     return fig
