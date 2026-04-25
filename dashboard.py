@@ -154,6 +154,22 @@ def process_predictions(raw: pd.DataFrame, eur_dkk: float) -> pd.DataFrame:
     return daily
 
 
+def process_predictions_hourly(raw: pd.DataFrame, eur_dkk: float) -> pd.DataFrame:
+    """Return all 120 hourly predictions for the latest issue_time."""
+    if raw.empty:
+        return pd.DataFrame()
+
+    latest_issue = raw["issue_time"].max()
+    issue_dt     = pd.Timestamp(latest_issue)
+    sub          = raw[raw["issue_time"] == latest_issue].copy()
+
+    future = sub[sub["target_time"] > issue_dt].sort_values("target_time").head(120)
+    future["pred_dkk"]   = future["predicted"]        * eur_dkk
+    future["actual_dkk"] = future["DayAheadPriceEUR"] * eur_dkk
+    future["issue_date"] = issue_dt.normalize()
+    return future[["target_time", "horizon_h", "pred_dkk", "actual_dkk", "issue_date"]].reset_index(drop=True)
+
+
 def daily_history(prices: pd.DataFrame) -> pd.DataFrame:
     if prices.empty:
         return pd.DataFrame()
@@ -299,60 +315,60 @@ def fig_history(hist: pd.DataFrame, days_back: int) -> go.Figure:
     return fig
 
 
-def fig_context(hist: pd.DataFrame, fcst: pd.DataFrame) -> go.Figure:
-    df  = hist.tail(21).copy()
+def fig_context(hist: pd.DataFrame, hourly_fcst: pd.DataFrame) -> go.Figure:
+    """Last 7 days of daily actuals + 120-hour XGBoost forecast at hourly resolution."""
+    df  = hist.tail(7).copy()
     fig = go.Figure()
 
     fig.add_trace(go.Scatter(
         x=df["Date"], y=df["AvgDKK"],
         mode="lines", line=dict(color=C["price"], width=2.5),
-        hovertemplate="%{x|%d %b}<br>Actual: <b>%{y:.0f} DKK/MWh</b><extra></extra>",
+        hovertemplate="%{x|%d %b}<br>Actual (daily avg): <b>%{y:.0f} DKK/MWh</b><extra></extra>",
         name="Historical actual",
     ))
 
-    # Dotted connector: last historical → first forecast
-    if not df.empty and not fcst.empty:
+    # Dotted connector: last historical daily point → first hourly forecast
+    if not df.empty and not hourly_fcst.empty:
         fig.add_trace(go.Scatter(
-            x=[df["Date"].iloc[-1], fcst["Date"].iloc[0]],
-            y=[df["AvgDKK"].iloc[-1], fcst["pred_dkk"].iloc[0]],
-            mode="lines", line=dict(color=C["fcst"], width=2, dash="dot"),
+            x=[df["Date"].iloc[-1], hourly_fcst["target_time"].iloc[0]],
+            y=[df["AvgDKK"].iloc[-1], hourly_fcst["pred_dkk"].iloc[0]],
+            mode="lines", line=dict(color=C["fcst"], width=1.5, dash="dot"),
             showlegend=False, hoverinfo="skip",
         ))
 
-    if not fcst.empty:
-        # XGBoost predicted line
+    if not hourly_fcst.empty:
+        # XGBoost hourly predictions
         fig.add_trace(go.Scatter(
-            x=fcst["Date"], y=fcst["pred_dkk"],
-            mode="lines+markers",
-            line=dict(color=C["fcst"], width=3),
-            marker=dict(size=10, color=C["fcst"]),
+            x=hourly_fcst["target_time"], y=hourly_fcst["pred_dkk"],
+            mode="lines",
+            line=dict(color=C["fcst"], width=2.5),
             fill="tozeroy", fillcolor=C["fcst_fill"],
-            hovertemplate="%{x|%d %b}<br>XGBoost: <b>%{y:.0f} DKK/MWh</b><extra></extra>",
+            hovertemplate="%{x|%d %b %H:%M}<br>XGBoost: <b>%{y:.0f} DKK/MWh</b><extra></extra>",
             name="XGBoost forecast",
         ))
 
-        # Actual prices for the forecast window (comparison)
-        if fcst["actual_dkk"].notna().any():
+        # Actual prices for the forecast window
+        if hourly_fcst["actual_dkk"].notna().any():
             fig.add_trace(go.Scatter(
-                x=fcst["Date"], y=fcst["actual_dkk"],
-                mode="lines+markers",
+                x=hourly_fcst["target_time"], y=hourly_fcst["actual_dkk"],
+                mode="lines",
                 line=dict(color=C["good"], width=2, dash="dot"),
-                marker=dict(size=7, color=C["good"], symbol="diamond"),
-                hovertemplate="%{x|%d %b}<br>Actual (known): <b>%{y:.0f} DKK/MWh</b><extra></extra>",
+                hovertemplate="%{x|%d %b %H:%M}<br>Actual: <b>%{y:.0f} DKK/MWh</b><extra></extra>",
                 name="Actual (for comparison)",
             ))
 
         # Shaded forecast zone
         fig.add_vrect(
-            x0=fcst["Date"].iloc[0], x1=fcst["Date"].iloc[-1],
+            x0=hourly_fcst["target_time"].iloc[0],
+            x1=hourly_fcst["target_time"].iloc[-1],
             fillcolor=C["fcst_fill"], layer="below", line_width=0,
-            annotation_text="Forecast window", annotation_position="top left",
+            annotation_text="5-day forecast (hourly)", annotation_position="top left",
             annotation_font_color=C["fcst"], annotation_font_size=11,
         )
 
     fig.update_layout(
-        **_BASE, height=380,
-        title=dict(text="Historical context + XGBoost 5-day forecast", font_size=13),
+        **_BASE, height=400,
+        title=dict(text="Historical context + XGBoost 5-day forecast · hourly resolution", font_size=13),
         legend=dict(orientation="h", y=1.05, x=1, xanchor="right", bgcolor="rgba(0,0,0,0)"),
         yaxis_title="DKK/MWh",
     )
@@ -456,9 +472,10 @@ def main() -> None:
         raw_preds = load_raw_predictions()
         metrics = load_metrics()
 
-    eur_dkk = compute_eur_dkk(prices)
-    fcst    = process_predictions(raw_preds, eur_dkk)
-    hist    = daily_history(prices)
+    eur_dkk      = compute_eur_dkk(prices)
+    fcst         = process_predictions(raw_preds, eur_dkk)
+    hourly_fcst  = process_predictions_hourly(raw_preds, eur_dkk)
+    hist         = daily_history(prices)
 
     days_back, show_raw = render_sidebar(prices, fcst, metrics)
 
@@ -552,7 +569,7 @@ def main() -> None:
 
         hist_for_ctx = hist[hist["Date"] <= today_date] if today_date is not None else hist
         st.plotly_chart(
-            fig_context(hist_for_ctx, fcst),
+            fig_context(hist_for_ctx, hourly_fcst),
             use_container_width=True, config={"displayModeBar": False},
         )
 
