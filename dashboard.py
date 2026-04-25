@@ -245,47 +245,103 @@ def groq_call(prompt: str) -> str:
         return ""
 
 
-def prompt_reasoning(fcst: pd.DataFrame, today_avg: float, issue_date: pd.Timestamp) -> str:
-    rows = "\n".join(
-        f"  • {r.Date.strftime('%a %d %b')}: {r.pred_dkk:.0f} DKK/MWh  "
-        f"({r.pred_dkk - today_avg:+.0f} vs today)"
+def _build_hourly_day_summary(hourly_fcst: pd.DataFrame) -> str:
+    """Build a per-day intraday breakdown string for LLM prompts."""
+    if hourly_fcst.empty:
+        return ""
+    lines = []
+    hourly_fcst = hourly_fcst.copy()
+    hourly_fcst["_date"] = hourly_fcst["target_time"].dt.normalize()
+    for date, grp in hourly_fcst.groupby("_date"):
+        grp = grp.sort_values("target_time")
+        peak_row   = grp.loc[grp["pred_dkk"].idxmax()]
+        cheap_row  = grp.loc[grp["pred_dkk"].idxmin()]
+        avg        = grp["pred_dkk"].mean()
+        lines.append(
+            f"  {pd.Timestamp(date).strftime('%a %d %b')}:  "
+            f"avg {avg:.0f}  |  peak {peak_row['pred_dkk']:.0f} @ {peak_row['target_time'].strftime('%H:%M')}  "
+            f"|  cheapest {cheap_row['pred_dkk']:.0f} @ {cheap_row['target_time'].strftime('%H:%M')}  "
+            f"  (all DKK/MWh)"
+        )
+    return "\n".join(lines)
+
+
+def _build_importance_string(imp_df: pd.DataFrame, top_n: int = 6) -> str:
+    """Format top-N feature importances for the LLM prompt."""
+    if imp_df.empty:
+        return "  (feature importances not available)"
+    rows = []
+    for _, r in imp_df.head(top_n).iterrows():
+        rows.append(f"  {r['feature']}: {r['importance']:.4f}")
+    return "\n".join(rows)
+
+
+def prompt_reasoning(
+    fcst: pd.DataFrame,
+    today_avg: float,
+    issue_date: pd.Timestamp,
+    hourly_fcst: pd.DataFrame,
+    imp_df: pd.DataFrame,
+) -> str:
+    daily_rows = "\n".join(
+        f"  {r.Date.strftime('%a %d %b')}: {r.pred_dkk:.0f} DKK/MWh  ({r.pred_dkk - today_avg:+.0f} vs today)"
         for _, r in fcst.iterrows()
     )
+    intraday = _build_hourly_day_summary(hourly_fcst)
+    feat_str = _build_importance_string(imp_df)
+
     return f"""You are an electricity market analyst specialising in Nordic energy markets.
 
 DK1 (West Denmark) XGBoost forecast, issued {issue_date.strftime('%d %b %Y')}:
 Today's average: {today_avg:.0f} DKK/MWh
 
-5-day outlook:
-{rows}
+DAILY AVERAGES (5-day outlook):
+{daily_rows}
 
-The model's top features: wind speed (10 m & 100 m), shortwave radiation, cloud cover, \
-temperature, pressure, hour-of-day, day-of-week, month, spot-price lags at 24 h, 48 h, 168 h.
+INTRADAY PROFILE per day (peak hour, cheapest hour, avg — all DKK/MWh):
+{intraday}
 
-Write exactly 4 bullet points (each starting with •) explaining what energy-market dynamics \
-are most likely driving this specific 5-day price pattern. Be concise, factual, and specific \
-to the DK1 market. No preamble or closing sentence."""
+MODEL FEATURE IMPORTANCES (gain, Day 1 model — higher = more influential):
+{feat_str}
+
+RULES:
+- Write exactly 4 bullet points, each starting with •.
+- Every bullet must cite at least one specific number from the data above (price, hour, date, or importance score).
+- Do NOT use the words "may", "could", "might", "likely", "possibly", or "perhaps".
+- Explain WHY prices move on those specific days and hours using the feature importances as evidence.
+- Be concise. No preamble. No closing sentence."""
 
 
-def prompt_household(fcst: pd.DataFrame, today_avg: float) -> str:
-    rows = "\n".join(
-        f"  • {r.Date.strftime('%A %d %b')}: {r.pred_dkk:.0f} DKK/MWh  "
-        f"({'↑ higher' if r.pred_dkk - today_avg > 20 else '↓ lower' if r.pred_dkk - today_avg < -20 else '→ similar'})"
+def prompt_household(
+    fcst: pd.DataFrame,
+    today_avg: float,
+    hourly_fcst: pd.DataFrame,
+) -> str:
+    daily_rows = "\n".join(
+        f"  {r.Date.strftime('%A %d %b')}: avg {r.pred_dkk:.0f} DKK/MWh  "
+        f"({'↑ EXPENSIVE' if r.pred_dkk - today_avg > 50 else '↓ CHEAP' if r.pred_dkk - today_avg < -50 else '→ similar'})"
         for _, r in fcst.iterrows()
     )
+    intraday = _build_hourly_day_summary(hourly_fcst)
+
     return f"""You are an energy advisor helping a Danish household cut their electricity bill.
 
-DK1 spot price forecast for the next 5 days:
-Today: {today_avg:.0f} DKK/MWh
-{rows}
+DK1 spot price forecast:
+Today's average: {today_avg:.0f} DKK/MWh
 
-Write 4-5 bullet points (each starting with •) of specific, actionable advice for:
-- EV charging (best day(s) and time of day)
-- Dishwasher and washing machine
-- Heat pump or electric heating
-- Any other flexible high-consumption appliance
+DAILY AVERAGES:
+{daily_rows}
 
-Name the specific days from the forecast. Be direct and practical. No preamble."""
+INTRADAY PROFILE per day (cheapest hour is the best time to run appliances):
+{intraday}
+
+RULES:
+- Write 5 bullet points, each starting with •.
+- Every bullet must name a specific day AND a specific hour window from the data above.
+- Do NOT use "may", "could", "might", "perhaps", or "consider".
+- Give direct instructions, not suggestions: "Charge your EV on [day] between [H1] and [H2] — price is [X] DKK/MWh."
+- Cover: EV charging, dishwasher/washing machine, heat pump/electric heating, hot water boiler, and one other flexible load.
+- No preamble. No closing sentence."""
 
 
 # ── Chart helpers ─────────────────────────────────────────────────────────────
@@ -812,7 +868,7 @@ def main() -> None:
             else:
                 if st.button("Generate forecast reasoning", key="btn_r", type="primary"):
                     with st.spinner("Asking Groq…"):
-                        text = groq_call(prompt_reasoning(fcst, today_avg, fcst["issue_date"].iloc[0]))
+                        text = groq_call(prompt_reasoning(fcst, today_avg, fcst["issue_date"].iloc[0], hourly_fcst, imp_df))
                         st.session_state["_r"] = text
 
                 if "_r" in st.session_state:
@@ -838,7 +894,7 @@ def main() -> None:
             else:
                 if st.button("Generate household tips", key="btn_h", type="primary"):
                     with st.spinner("Asking Groq…"):
-                        text = groq_call(prompt_household(fcst, today_avg))
+                        text = groq_call(prompt_household(fcst, today_avg, hourly_fcst))
                         st.session_state["_h"] = text
 
                 if "_h" in st.session_state:
