@@ -521,7 +521,7 @@ def fig_shap(shap_vals: pd.DataFrame, shap_feat: pd.DataFrame, top_n: int = 8) -
         "height": 380,
         "showlegend": False,
         "title": dict(text="SHAP values · XGBoost Day 1 model  (red = high feature value, blue = low)", font_size=13),
-        "xaxis": dict(**_BASE["xaxis"], title="SHAP value (EUR/MWh impact)", zeroline=True, zerolinecolor=C["border"]),
+        "xaxis": dict(**{**_BASE["xaxis"], "zeroline": True, "zerolinecolor": C["border"]}, title="SHAP value (EUR/MWh impact)"),
         "yaxis": dict(
             **_BASE["yaxis"],
             tickmode="array",
