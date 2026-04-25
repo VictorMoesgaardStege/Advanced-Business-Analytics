@@ -262,12 +262,13 @@ def fig_today(hourly: pd.DataFrame, date: pd.Timestamp) -> go.Figure:
         ]:
             fig.add_vline(x=h, line_dash="dot", line_color=col, opacity=0.55,
                           annotation_text=lbl, annotation_font_color=col, annotation_font_size=11)
-    fig.update_layout(
-        **_BASE, height=320, showlegend=False,
-        title=dict(text=f"Hourly spot price · {date.strftime('%d %b %Y')}", font_size=13),
-        xaxis=dict(**_BASE["xaxis"], dtick=3, ticksuffix=":00", range=[-0.5, 23.5]),
-        yaxis_title="DKK/MWh",
-    )
+    fig.update_layout(**{
+        **_BASE,
+        "height": 320, "showlegend": False,
+        "title": dict(text=f"Hourly spot price · {date.strftime('%d %b %Y')}", font_size=13),
+        "xaxis": dict(**_BASE["xaxis"], dtick=3, ticksuffix=":00", range=[-0.5, 23.5]),
+        "yaxis_title": "DKK/MWh",
+    })
     return fig
 
 
