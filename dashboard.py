@@ -322,34 +322,32 @@ def fig_context(
     cutoff: pd.Timestamp | None = None,
 ) -> go.Figure:
     """Last ctx_days of hourly actuals + 120-hour XGBoost forecast at hourly resolution."""
-    if cutoff is None:
-        cutoff = (
-            hourly_fcst["issue_date"].iloc[0] if not hourly_fcst.empty
-            else prices["Date"].max() if not prices.empty
-            else pd.Timestamp.now().normalize()
-        )
+    # hist_end = first forecast target hour (exclusive), so there is no overlap
+    if not hourly_fcst.empty:
+        hist_end = hourly_fcst["target_time"].iloc[0]
+    elif cutoff is not None:
+        hist_end = pd.Timestamp(cutoff) + pd.Timedelta(hours=1)
+    else:
+        hist_end = prices["_ts"].max() + pd.Timedelta(hours=1)
 
-    start = cutoff - pd.Timedelta(days=ctx_days)
-    df = prices[(prices["Date"] >= start) & (prices["Date"] <= cutoff)].copy()
-    hourly_hist = df.groupby("_ts", as_index=False)["PriceDKK"].mean().sort_values("_ts")
+    hist_start = hist_end - pd.Timedelta(days=ctx_days)
+
+    # Floor raw timestamps to the hour so granularity matches the forecast
+    df = prices[(prices["_ts"] >= hist_start) & (prices["_ts"] < hist_end)].copy()
+    df["_ts_h"] = df["_ts"].dt.floor("h")
+    hourly_hist = df.groupby("_ts_h", as_index=False)["PriceDKK"].mean().sort_values("_ts_h")
 
     fig = go.Figure()
 
     fig.add_trace(go.Scatter(
-        x=hourly_hist["_ts"], y=hourly_hist["PriceDKK"],
+        x=hourly_hist["_ts_h"], y=hourly_hist["PriceDKK"],
         mode="lines", line=dict(color=C["price"], width=2),
         hovertemplate="%{x|%d %b %H:%M}<br>Actual: <b>%{y:.0f} DKK/MWh</b><extra></extra>",
         name="Historical actual",
     ))
 
-    # Connector: last historical hour → first forecast hour
-    if not hourly_hist.empty and not hourly_fcst.empty:
-        fig.add_trace(go.Scatter(
-            x=[hourly_hist["_ts"].iloc[-1], hourly_fcst["target_time"].iloc[0]],
-            y=[hourly_hist["PriceDKK"].iloc[-1], hourly_fcst["pred_dkk"].iloc[0]],
-            mode="lines", line=dict(color=C["fcst"], width=1.5, dash="dot"),
-            showlegend=False, hoverinfo="skip",
-        ))
+    # No explicit connector needed — hist ends at the hour before the first forecast point
+    # so the two lines meet naturally with no gap and no overlap.
 
     if not hourly_fcst.empty:
         # XGBoost hourly predictions
