@@ -171,7 +171,7 @@ def simulate_forecasts(actuals: pd.DataFrame, err_params: dict) -> pd.DataFrame:
                     actual_val = float(actual_row[var])
 
                     # Solar radiation is physically zero at night — no forecast error to draw
-                    if var == "shortwave_radiation" and actual_val < 1.0:
+                    if var == "shortwave_radiation" and actual_val < 0.2:
                         rec[f"fcst_{var}"]   = 0.0
                         rec[f"actual_{var}"] = actual_val
                         continue
