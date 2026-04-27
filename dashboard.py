@@ -13,10 +13,18 @@ PRICE_FILE  = DATA_DIR / "day_ahead_prices_dk1_raw.csv"
 PRED_FILE    = Path("outputs/model/predictions.parquet")
 METRICS_FILE = Path("outputs/model/metrics.csv")
 MODEL_FILE        = Path("outputs/model/final_day_models.joblib")
-SHAP_VALUES_FILE  = Path("outputs/model/shap_day1_values.parquet")
+SHAP_VALUES_FILE   = Path("outputs/model/shap_day1_values.parquet")
 SHAP_FEATURES_FILE = Path("outputs/model/shap_day1_features.parquet")
+WEATHER_FILE       = Path("data/forsoeg_dataset.parquet")
 PRICE_AREA  = "DK1"
 EUR_DKK_FB  = 7.46   # fallback exchange rate
+
+WEATHER_VARS = {
+    "Wind 100m":   ("fcst_wind_speed_100m",    "actual_wind_speed_100m",    "m/s",  "#38bdf8"),
+    "Solar":       ("fcst_shortwave_radiation", "actual_shortwave_radiation", "W/m²", "#fbbf24"),
+    "Temperature": ("fcst_temperature_2m",      "actual_temperature_2m",      "°C",   "#f87171"),
+    "Cloud cover": ("fcst_cloud_cover",         "actual_cloud_cover",         "%",    "#94a3b8"),
+}
 
 C = {
     "bg":          "#0f172a",
@@ -163,6 +171,25 @@ def load_shap_data() -> tuple[pd.DataFrame, pd.DataFrame]:
         return pd.read_parquet(SHAP_VALUES_FILE), pd.read_parquet(SHAP_FEATURES_FILE)
     except Exception:
         return pd.DataFrame(), pd.DataFrame()
+
+
+@st.cache_data(show_spinner=False)
+def load_weather_data() -> pd.DataFrame:
+    """Load DK1_west simulated weather forecasts and actuals from forsoeg_dataset.parquet."""
+    if not WEATHER_FILE.exists():
+        return pd.DataFrame()
+    try:
+        df = pd.read_parquet(
+            WEATHER_FILE,
+            columns=["region", "issue_time", "target_time", "horizon_h"]
+            + [c for var in WEATHER_VARS.values() for c in (var[0], var[1])],
+        )
+        df = df[df["region"] == "DK1_west"].copy()
+        df["target_time"] = pd.to_datetime(df["target_time"])
+        df["issue_time"]  = pd.to_datetime(df["issue_time"])
+        return df.sort_values("target_time").reset_index(drop=True)
+    except Exception:
+        return pd.DataFrame()
 
 
 # ── Data processing ───────────────────────────────────────────────────────────
@@ -630,6 +657,102 @@ def fig_shap(shap_vals: pd.DataFrame, shap_feat: pd.DataFrame, top_n: int = 8) -
     return fig
 
 
+def fig_weather(
+    weather: pd.DataFrame,
+    selected_vars: list[str],
+    days_back: int,
+    horizon_h: int,
+) -> go.Figure:
+    """Subplots: one row per selected weather variable, actual vs forecast."""
+    from plotly.subplots import make_subplots
+
+    n = len(selected_vars)
+    fig = make_subplots(
+        rows=n, cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.06,
+        subplot_titles=selected_vars,
+    )
+
+    end   = weather["target_time"].max()
+    start = end - pd.Timedelta(days=days_back)
+
+    actuals = (
+        weather[weather["target_time"].between(start, end)]
+        .groupby("target_time", as_index=False)
+        .first()
+        .sort_values("target_time")
+    )
+    forecasts = (
+        weather[
+            (weather["horizon_h"] == horizon_h)
+            & weather["target_time"].between(start, end)
+        ]
+        .sort_values("target_time")
+    )
+
+    for i, var_name in enumerate(selected_vars, start=1):
+        fcst_col, actual_col, unit, color = WEATHER_VARS[var_name]
+
+        fig.add_trace(go.Scatter(
+            x=actuals["target_time"], y=actuals[actual_col],
+            mode="lines", line=dict(color=color, width=1.8),
+            name=f"{var_name} · actual",
+            hovertemplate=f"%{{x|%d %b %H:%M}}<br>Actual: <b>%{{y:.1f}} {unit}</b><extra></extra>",
+            legendgroup=var_name,
+        ), row=i, col=1)
+
+        if not forecasts.empty:
+            fig.add_trace(go.Scatter(
+                x=forecasts["target_time"], y=forecasts[fcst_col],
+                mode="lines", line=dict(color=color, width=1.5, dash="dot"),
+                name=f"{var_name} · {horizon_h}h forecast",
+                hovertemplate=f"%{{x|%d %b %H:%M}}<br>{horizon_h}h fcst: <b>%{{y:.1f}} {unit}</b><extra></extra>",
+                legendgroup=var_name,
+                legendgrouptitle_text=var_name if i == 1 else "",
+            ), row=i, col=1)
+
+        fig.update_yaxes(
+            title_text=unit,
+            row=i, col=1,
+            showgrid=True, gridcolor=C["grid"],
+            zeroline=False, linecolor=C["border"],
+            color=C["text"], tickfont=dict(size=10),
+        )
+        fig.update_xaxes(
+            showgrid=True, gridcolor=C["grid"],
+            zeroline=False, linecolor=C["border"],
+            color=C["text"],
+            row=i, col=1,
+        )
+
+    fig.update_layout(
+        template="plotly_dark",
+        paper_bgcolor=C["card"],
+        plot_bgcolor=C["card"],
+        font=dict(color=C["text"], size=12),
+        margin=dict(l=10, r=10, t=48, b=10),
+        height=220 * n,
+        hoverlabel=dict(bgcolor=C["bg"], bordercolor=C["border"]),
+        legend=dict(
+            orientation="h", y=1.04, x=1, xanchor="right",
+            bgcolor="rgba(0,0,0,0)", font=dict(size=11),
+            groupclick="toggleitem",
+        ),
+        title=dict(
+            text=f"Weather · DK1 West · last {days_back} days  "
+                 f"<span style='font-size:12px;color:{C['muted']};'>"
+                 f"solid = actual · dotted = {horizon_h}h forecast</span>",
+            font_size=13,
+        ),
+    )
+    # Style subplot title annotations
+    for ann in fig.layout.annotations:
+        ann.font.color = C["muted"]
+        ann.font.size  = 11
+    return fig
+
+
 # ── Forecast cards ────────────────────────────────────────────────────────────
 def render_forecast_cards(fcst: pd.DataFrame, today_avg: float) -> None:
     cols = st.columns(len(fcst))
@@ -891,6 +1014,52 @@ def main() -> None:
                 )
             else:
                 st.info("SHAP data unavailable — run `XG_Boost_full_Res.py` to generate `shap_day1_*.parquet`.")
+
+    # ── Weather explorer ──────────────────────────────────────────────────────
+    weather = load_weather_data()
+    if not weather.empty:
+        st.markdown("<div class='section'>Weather explorer · DK1 West · actual vs forecast</div>", unsafe_allow_html=True)
+
+        # Variable toggles
+        tog_cols = st.columns(4)
+        show_wind  = tog_cols[0].toggle("Wind 100m",   value=True,  key="w_wind")
+        show_solar = tog_cols[1].toggle("Solar",        value=True,  key="w_solar")
+        show_temp  = tog_cols[2].toggle("Temperature",  value=True,  key="w_temp")
+        show_cloud = tog_cols[3].toggle("Cloud cover",  value=False, key="w_cloud")
+
+        selected_weather = [
+            v for v, on in [
+                ("Wind 100m",   show_wind),
+                ("Solar",       show_solar),
+                ("Temperature", show_temp),
+                ("Cloud cover", show_cloud),
+            ] if on
+        ]
+
+        # Time & horizon controls
+        wc1, wc2 = st.columns(2)
+        w_days = wc1.select_slider(
+            "History window",
+            options=[7, 14, 30, 60, 90, 180],
+            value=14,
+            format_func=lambda x: f"{x} days",
+            key="w_days",
+        )
+        w_horizon = wc2.select_slider(
+            "Forecast horizon to compare",
+            options=[1, 6, 12, 24, 48, 72, 96, 120],
+            value=24,
+            format_func=lambda x: f"{x}h ahead",
+            key="w_horizon",
+        )
+
+        if selected_weather:
+            st.plotly_chart(
+                fig_weather(weather, selected_weather, w_days, w_horizon),
+                use_container_width=True, config={"displayModeBar": False},
+            )
+        else:
+            st.info("Select at least one weather variable above.")
 
     # ── Groq AI section ───────────────────────────────────────────────────────
     st.markdown("<div class='section'>AI insights · Groq Llama 3.3 70B</div>", unsafe_allow_html=True)
