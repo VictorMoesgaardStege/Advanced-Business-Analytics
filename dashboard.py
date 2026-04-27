@@ -370,35 +370,68 @@ Rules:
 - No preamble. No closing sentence. Only the 4 bullets."""
 
 
+def _build_cheap_windows(hourly_fcst: pd.DataFrame, n: int = 3) -> str:
+    """Identify the n cheapest multi-hour windows across the forecast period."""
+    if hourly_fcst.empty:
+        return ""
+    df = hourly_fcst.copy().sort_values("pred_dkk")
+    top = df.head(max(n * 4, 12)).sort_values("target_time")
+    top["_date"] = top["target_time"].dt.normalize()
+    lines = []
+    for date, grp in top.groupby("_date"):
+        hours = sorted(grp["target_time"].dt.hour.tolist())
+        h_from = hours[0]
+        h_to   = hours[-1] + 1
+        avg_p  = grp["pred_dkk"].mean()
+        time_of_day = (
+            "overnight" if h_from < 6
+            else "morning" if h_from < 12
+            else "afternoon" if h_from < 18
+            else "evening"
+        )
+        lines.append(
+            f"  {pd.Timestamp(date).strftime('%A %d %b')}: cheapest {time_of_day} "
+            f"around {h_from:02d}:00–{h_to:02d}:00, avg {avg_p:.0f} DKK/MWh"
+        )
+        if len(lines) >= n:
+            break
+    return "\n".join(lines)
+
+
 def prompt_household(
     fcst: pd.DataFrame,
     today_avg: float,
     hourly_fcst: pd.DataFrame,
 ) -> str:
     daily_rows = "\n".join(
-        f"  {r.Date.strftime('%A %d %b')}: avg {r.pred_dkk:.0f} DKK/MWh  "
-        f"({'↑ EXPENSIVE' if r.pred_dkk - today_avg > 50 else '↓ CHEAP' if r.pred_dkk - today_avg < -50 else '→ similar'})"
+        f"  {r.Date.strftime('%A %d %b')}: {r.pred_dkk:.0f} DKK/MWh avg  "
+        f"({'↑ expensive' if r.pred_dkk - today_avg > 50 else '↓ cheap' if r.pred_dkk - today_avg < -50 else '→ similar to today'})"
         for _, r in fcst.iterrows()
     )
-    intraday = _build_hourly_day_summary(hourly_fcst)
+    intraday     = _build_hourly_day_summary(hourly_fcst)
+    cheap_windows = _build_cheap_windows(hourly_fcst)
 
-    return f"""You are an energy advisor helping a Danish household cut their electricity bill.
+    return f"""You are a friendly energy advisor helping a Danish household reduce their electricity bill.
 
-DK1 spot price forecast:
-Today's average: {today_avg:.0f} DKK/MWh
+DK1 spot price forecast — today's average: {today_avg:.0f} DKK/MWh
 
-DAILY AVERAGES:
+DAILY OUTLOOK:
 {daily_rows}
 
-INTRADAY PROFILE per day (cheapest hour is the best time to run appliances):
+CHEAPEST PERIODS to shift load to:
+{cheap_windows}
+
+INTRADAY DETAIL:
 {intraday}
 
-RULES:
-- Write 5 bullet points, each starting with •.
-- Every bullet must name a specific day AND a specific hour window from the data above.
-- Do NOT use "may", "could", "might", "perhaps", or "consider".
-- Give direct instructions, not suggestions: "Charge your EV on [day] between [H1] and [H2] — price is [X] DKK/MWh."
-- Cover: EV charging, dishwasher/washing machine, heat pump/electric heating, hot water boiler, and one other flexible load.
+Write 5 bullet points (•), each 2–3 sentences, 40–55 words.
+
+Style guide:
+- Group multiple appliances around the SAME cheap window rather than giving each a different time slot.
+- Use natural time language: "overnight", "early morning", "during the night" — not "between 03:00 and 04:00".
+- Be direct and practical but conversational, not robotic.
+- Explain briefly WHY that window is cheap (e.g. low overnight demand, high wind, etc.).
+- Cover across the 5 bullets: EV charging, washing/dishwasher, heat pump, hot water, and one other flexible load.
 - No preamble. No closing sentence."""
 
 
