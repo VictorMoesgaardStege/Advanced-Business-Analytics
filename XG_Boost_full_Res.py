@@ -49,12 +49,11 @@ _XGB_BASE = dict(
     n_jobs           = -1,
     verbosity        = 0,
 )
-XGB_WF    = dict(**_XGB_BASE, n_estimators=300)
-XGB_FINAL = dict(**_XGB_BASE, n_estimators=500)
-
 _XGB_Q_BASE = dict(**_XGB_BASE, objective="reg:quantileerror", n_estimators=300)
-XGB_Q40 = dict(**_XGB_Q_BASE, quantile_alpha=0.40)
-XGB_Q60 = dict(**_XGB_Q_BASE, quantile_alpha=0.60)
+XGB_WF    = dict(**_XGB_Q_BASE, quantile_alpha=0.50)   # MAE-optimal (median)
+XGB_FINAL = dict(**{**_XGB_Q_BASE, "n_estimators": 500}, quantile_alpha=0.50)
+XGB_Q40   = dict(**_XGB_Q_BASE, quantile_alpha=0.40)
+XGB_Q60   = dict(**_XGB_Q_BASE, quantile_alpha=0.60)
 
 DAY_GROUPS = {1: (1, 24), 2: (25, 48), 3: (49, 72), 4: (73, 96), 5: (97, 120)}
 
