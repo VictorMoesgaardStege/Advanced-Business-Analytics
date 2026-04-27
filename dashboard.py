@@ -130,7 +130,6 @@ def load_metrics() -> pd.DataFrame:
 
 
 @st.cache_data(show_spinner=False)
-@st.cache_data(show_spinner=False)
 def compute_forecast_bands(_raw: pd.DataFrame, eur_dkk: float) -> dict[int, float]:
     """Return {horizon_h: sigma_dkk} from historical walk-forward residuals."""
     if _raw.empty:
@@ -249,7 +248,14 @@ def process_predictions_hourly(
     future["actual_dkk"] = future["DayAheadPriceEUR"] * eur_dkk
     future["issue_date"] = issue_ts.normalize()
     future["sigma_dkk"]  = future["horizon_h"].map(bands or {}).fillna(0.0)
-    return future[["target_time", "horizon_h", "pred_dkk", "actual_dkk", "issue_date", "sigma_dkk"]].reset_index(drop=True)
+    if "pred_q40" in future.columns and "pred_q60" in future.columns:
+        future["pred_q40_dkk"] = future["pred_q40"] * eur_dkk
+        future["pred_q60_dkk"] = future["pred_q60"] * eur_dkk
+    else:
+        future["pred_q40_dkk"] = np.nan
+        future["pred_q60_dkk"] = np.nan
+    return future[["target_time", "horizon_h", "pred_dkk", "actual_dkk", "issue_date",
+                   "sigma_dkk", "pred_q40_dkk", "pred_q60_dkk"]].reset_index(drop=True)
 
 
 def daily_history(prices: pd.DataFrame) -> pd.DataFrame:
@@ -540,9 +546,13 @@ def fig_context(
     # so the two lines meet naturally with no gap and no overlap.
 
     if not hourly_fcst.empty:
-        has_bands = "sigma_dkk" in hourly_fcst.columns and hourly_fcst["sigma_dkk"].gt(0).any()
+        has_sigma = "sigma_dkk" in hourly_fcst.columns and hourly_fcst["sigma_dkk"].gt(0).any()
+        has_quantiles = (
+            "pred_q40_dkk" in hourly_fcst.columns
+            and hourly_fcst["pred_q40_dkk"].notna().any()
+        )
 
-        if has_bands:
+        if has_sigma:
             upper = hourly_fcst["pred_dkk"] + hourly_fcst["sigma_dkk"]
             lower = hourly_fcst["pred_dkk"] - hourly_fcst["sigma_dkk"]
             fig.add_trace(go.Scatter(
@@ -554,9 +564,25 @@ def fig_context(
                 x=hourly_fcst["target_time"], y=lower,
                 mode="lines", line=dict(width=0),
                 fill="tonexty",
-                fillcolor="rgba(167,139,250,0.18)",
+                fillcolor="rgba(167,139,250,0.13)",
                 hovertemplate="%{x|%d %b %H:%M}<br>±1σ: <b>%{y:.0f}</b><extra></extra>",
                 name="±1σ confidence",
+            ))
+
+        if has_quantiles:
+            fig.add_trace(go.Scatter(
+                x=hourly_fcst["target_time"], y=hourly_fcst["pred_q60_dkk"],
+                mode="lines", line=dict(width=0),
+                hovertemplate="%{x|%d %b %H:%M}<br>q60: <b>%{y:.0f} DKK/MWh</b><extra></extra>",
+                showlegend=False,
+            ))
+            fig.add_trace(go.Scatter(
+                x=hourly_fcst["target_time"], y=hourly_fcst["pred_q40_dkk"],
+                mode="lines", line=dict(width=0),
+                fill="tonexty",
+                fillcolor="rgba(167,139,250,0.30)",
+                hovertemplate="%{x|%d %b %H:%M}<br>q40: <b>%{y:.0f} DKK/MWh</b><extra></extra>",
+                name="q40–q60 band",
             ))
 
         # XGBoost hourly predictions

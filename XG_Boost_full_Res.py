@@ -53,8 +53,8 @@ XGB_WF    = dict(**_XGB_BASE, n_estimators=300)
 XGB_FINAL = dict(**_XGB_BASE, n_estimators=500)
 
 _XGB_Q_BASE = dict(**_XGB_BASE, objective="reg:quantileerror", n_estimators=300)
-XGB_Q45 = dict(**_XGB_Q_BASE, quantile_alpha=0.45)
-XGB_Q55 = dict(**_XGB_Q_BASE, quantile_alpha=0.55)
+XGB_Q40 = dict(**_XGB_Q_BASE, quantile_alpha=0.40)
+XGB_Q60 = dict(**_XGB_Q_BASE, quantile_alpha=0.60)
 
 DAY_GROUPS = {1: (1, 24), 2: (25, 48), 3: (49, 72), 4: (73, 96), 5: (97, 120)}
 
@@ -184,18 +184,18 @@ def walk_forward(df: pd.DataFrame):
         if train.empty or test.empty:
             continue
 
-        models    = fit_day_models(train, XGB_WF)
-        models_q45 = fit_day_models(train, XGB_Q45)
-        models_q55 = fit_day_models(train, XGB_Q55)
+        models     = fit_day_models(train, XGB_WF)
+        models_q40 = fit_day_models(train, XGB_Q40)
+        models_q60 = fit_day_models(train, XGB_Q60)
         test_r = test.reset_index(drop=True)
         preds     = predict_day_models(models,     test_r)
-        preds_q45 = predict_day_models(models_q45, test_r)
-        preds_q55 = predict_day_models(models_q55, test_r)
+        preds_q40 = predict_day_models(models_q40, test_r)
+        preds_q60 = predict_day_models(models_q60, test_r)
 
         result = test_r[["issue_time", "target_time", "horizon_h", TARGET_COL]].copy()
         result["predicted"]  = preds
-        result["pred_q45"]   = preds_q45
-        result["pred_q55"]   = preds_q55
+        result["pred_q40"]   = preds_q40
+        result["pred_q60"]   = preds_q60
         result["fold"]       = i
         result["fold_end"]   = train_end
         all_preds.append(result)
