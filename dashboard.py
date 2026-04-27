@@ -13,10 +13,17 @@ PRICE_FILE  = DATA_DIR / "day_ahead_prices_dk1_raw.csv"
 PRED_FILE    = Path("outputs/model/predictions.parquet")
 METRICS_FILE = Path("outputs/model/metrics.csv")
 MODEL_FILE        = Path("outputs/model/final_day_models.joblib")
-SHAP_VALUES_FILE  = Path("outputs/model/shap_day1_values.parquet")
+SHAP_VALUES_FILE   = Path("outputs/model/shap_day1_values.parquet")
 SHAP_FEATURES_FILE = Path("outputs/model/shap_day1_features.parquet")
+WEATHER_FILE       = Path("data/weather_dk1_dashboard.parquet")
 PRICE_AREA  = "DK1"
 EUR_DKK_FB  = 7.46   # fallback exchange rate
+
+WEATHER_VARS = {
+    "Wind 100m":   ("fcst_wind_speed_100m",    "actual_wind_speed_100m",    "m/s",  "#38bdf8"),
+    "Solar":       ("fcst_shortwave_radiation", "actual_shortwave_radiation", "W/m²", "#fbbf24"),
+    "Temperature": ("fcst_temperature_2m",      "actual_temperature_2m",      "°C",   "#f87171"),
+}
 
 C = {
     "bg":          "#0f172a",
@@ -128,10 +135,9 @@ def compute_forecast_bands(_raw: pd.DataFrame, eur_dkk: float) -> dict[int, floa
     if _raw.empty:
         return {}
     valid = _raw.dropna(subset=["predicted", "DayAheadPriceEUR"])
-    valid = valid[valid["DayAheadPriceEUR"] > 0]
+    valid = valid[valid["DayAheadPriceEUR"] > 0].copy()
     if valid.empty:
         return {}
-    valid = valid.copy()
     valid["residual_eur"] = valid["predicted"] - valid["DayAheadPriceEUR"]
     sigma = valid.groupby("horizon_h")["residual_eur"].std() * eur_dkk
     return sigma.to_dict()
@@ -163,6 +169,20 @@ def load_shap_data() -> tuple[pd.DataFrame, pd.DataFrame]:
         return pd.read_parquet(SHAP_VALUES_FILE), pd.read_parquet(SHAP_FEATURES_FILE)
     except Exception:
         return pd.DataFrame(), pd.DataFrame()
+
+
+@st.cache_data(show_spinner=False)
+def load_weather_data() -> pd.DataFrame:
+    """Load pre-aggregated DK1_west weather forecasts and actuals."""
+    if not WEATHER_FILE.exists():
+        return pd.DataFrame()
+    try:
+        df = pd.read_parquet(WEATHER_FILE)
+        df["target_time"] = pd.to_datetime(df["target_time"])
+        df["issue_time"]  = pd.to_datetime(df["issue_time"])
+        return df.sort_values("target_time").reset_index(drop=True)
+    except Exception:
+        return pd.DataFrame()
 
 
 # ── Data processing ───────────────────────────────────────────────────────────
@@ -228,7 +248,14 @@ def process_predictions_hourly(
     future["actual_dkk"] = future["DayAheadPriceEUR"] * eur_dkk
     future["issue_date"] = issue_ts.normalize()
     future["sigma_dkk"]  = future["horizon_h"].map(bands or {}).fillna(0.0)
-    return future[["target_time", "horizon_h", "pred_dkk", "actual_dkk", "issue_date", "sigma_dkk"]].reset_index(drop=True)
+    if "pred_q40" in future.columns and "pred_q60" in future.columns:
+        future["pred_q40_dkk"] = future["pred_q40"] * eur_dkk
+        future["pred_q60_dkk"] = future["pred_q60"] * eur_dkk
+    else:
+        future["pred_q40_dkk"] = np.nan
+        future["pred_q60_dkk"] = np.nan
+    return future[["target_time", "horizon_h", "pred_dkk", "actual_dkk", "issue_date",
+                   "sigma_dkk", "pred_q40_dkk", "pred_q60_dkk"]].reset_index(drop=True)
 
 
 def daily_history(prices: pd.DataFrame) -> pd.DataFrame:
@@ -256,7 +283,7 @@ def groq_call(prompt: str) -> str:
         resp   = client.chat.completions.create(
             model    = "llama-3.3-70b-versatile",
             messages = [{"role": "user", "content": prompt}],
-            max_tokens  = 700,
+            max_tokens  = 650,
             temperature = 0.4,
         )
         return (resp.choices[0].message.content or "").strip()
@@ -285,14 +312,32 @@ def _build_hourly_day_summary(hourly_fcst: pd.DataFrame) -> str:
     return "\n".join(lines)
 
 
-def _build_importance_string(imp_df: pd.DataFrame, top_n: int = 6) -> str:
-    """Format top-N feature importances for the LLM prompt."""
-    if imp_df.empty:
-        return "  (feature importances not available)"
-    rows = []
-    for _, r in imp_df.head(top_n).iterrows():
-        rows.append(f"  {r['feature']}: {r['importance']:.4f}")
-    return "\n".join(rows)
+def _build_weather_summary(weather: pd.DataFrame, issue_ts: pd.Timestamp) -> str:
+    """Per-day avg wind speed, solar radiation, and temperature for the 5-day forecast window."""
+    if weather.empty:
+        return "  (weather data unavailable)"
+    available = pd.to_datetime(weather["issue_time"].unique())
+    w_issue = min(available, key=lambda x: abs(x - issue_ts))
+    fcst = (
+        weather[
+            (weather["issue_time"] == w_issue)
+            & (weather["target_time"] > w_issue)
+            & (weather["target_time"] <= w_issue + pd.Timedelta(days=5))
+        ]
+        .copy()
+    )
+    if fcst.empty:
+        return "  (weather data unavailable)"
+    fcst["_date"] = fcst["target_time"].dt.normalize()
+    lines = []
+    for date, grp in fcst.groupby("_date"):
+        lines.append(
+            f"  {pd.Timestamp(date).strftime('%a %d %b')}:  "
+            f"wind {grp['fcst_wind_speed_100m'].mean():.1f} m/s  |  "
+            f"solar {grp['fcst_shortwave_radiation'].mean():.0f} W/m²  |  "
+            f"temp {grp['fcst_temperature_2m'].mean():.1f} °C"
+        )
+    return "\n".join(lines)
 
 
 def prompt_reasoning(
@@ -300,35 +345,63 @@ def prompt_reasoning(
     today_avg: float,
     issue_date: pd.Timestamp,
     hourly_fcst: pd.DataFrame,
-    imp_df: pd.DataFrame,
+    weather: pd.DataFrame,
 ) -> str:
     daily_rows = "\n".join(
         f"  {r.Date.strftime('%a %d %b')}: {r.pred_dkk:.0f} DKK/MWh  ({r.pred_dkk - today_avg:+.0f} vs today)"
         for _, r in fcst.iterrows()
     )
-    intraday = _build_hourly_day_summary(hourly_fcst)
-    feat_str = _build_importance_string(imp_df)
+    intraday    = _build_hourly_day_summary(hourly_fcst)
+    weather_str = _build_weather_summary(weather, issue_date)
 
-    return f"""You are an electricity market analyst specialising in Nordic energy markets.
+    return f"""You are a Nordic electricity market analyst. Be direct and concise.
 
-DK1 (West Denmark) XGBoost forecast, issued {issue_date.strftime('%d %b %Y')}:
-Today's average: {today_avg:.0f} DKK/MWh
+DK1 forecast issued {issue_date.strftime('%d %b %Y')} — today avg: {today_avg:.0f} DKK/MWh
 
-DAILY AVERAGES (5-day outlook):
-{daily_rows}
-
-INTRADAY PROFILE per day (peak hour, cheapest hour, avg — all DKK/MWh):
+PRICES (daily avg, peak, cheapest):
 {intraday}
 
-MODEL FEATURE IMPORTANCES (gain, Day 1 model — higher = more influential):
-{feat_str}
+WEATHER FORECAST (avg per day):
+{weather_str}
 
-RULES:
-- Write exactly 4 bullet points, each starting with •.
-- Every bullet must cite at least one specific number from the data above (price, hour, date, or importance score).
-- Do NOT use the words "may", "could", "might", "likely", "possibly", or "perhaps".
-- Explain WHY prices move on those specific days and hours using the feature importances as evidence.
-- Be concise. No preamble. No closing sentence."""
+Write EXACTLY 4 bullet points (•), each 50–70 words. Each bullet covers one key price driver across the 5-day window.
+
+Write like a Nordic energy market analyst giving a verbal briefing — analytical, not descriptive. Do NOT list weather numbers sentence by sentence. Instead, use weather and price data as evidence to support a broader market argument, for example:
+- "Prices are forecast to rise sharply mid-week as wind drops below 3 m/s, removing the primary source of low-cost generation and forcing the market to rely on expensive thermal capacity."
+- "The sub-zero temperatures on [day] will amplify heat-pump demand across Scandinavia, tightening the supply-demand balance at peak hours and pushing the 18:00 price to [X] DKK/MWh."
+
+Rules:
+- Reference specific numbers only where they make the argument stronger, not in every sentence.
+- Do NOT use "may", "could", "might", or "perhaps".
+- No preamble. No closing sentence. Only the 4 bullets."""
+
+
+def _build_cheap_windows(hourly_fcst: pd.DataFrame, n: int = 3) -> str:
+    """Identify the n cheapest multi-hour windows across the forecast period."""
+    if hourly_fcst.empty:
+        return ""
+    df = hourly_fcst.copy().sort_values("pred_dkk")
+    top = df.head(max(n * 4, 12)).sort_values("target_time")
+    top["_date"] = top["target_time"].dt.normalize()
+    lines = []
+    for date, grp in top.groupby("_date"):
+        hours = sorted(grp["target_time"].dt.hour.tolist())
+        h_from = hours[0]
+        h_to   = hours[-1] + 1
+        avg_p  = grp["pred_dkk"].mean()
+        time_of_day = (
+            "overnight" if h_from < 6
+            else "morning" if h_from < 12
+            else "afternoon" if h_from < 18
+            else "evening"
+        )
+        lines.append(
+            f"  {pd.Timestamp(date).strftime('%A %d %b')}: cheapest {time_of_day} "
+            f"around {h_from:02d}:00–{h_to:02d}:00, avg {avg_p:.0f} DKK/MWh"
+        )
+        if len(lines) >= n:
+            break
+    return "\n".join(lines)
 
 
 def prompt_household(
@@ -337,29 +410,34 @@ def prompt_household(
     hourly_fcst: pd.DataFrame,
 ) -> str:
     daily_rows = "\n".join(
-        f"  {r.Date.strftime('%A %d %b')}: avg {r.pred_dkk:.0f} DKK/MWh  "
-        f"({'↑ EXPENSIVE' if r.pred_dkk - today_avg > 50 else '↓ CHEAP' if r.pred_dkk - today_avg < -50 else '→ similar'})"
+        f"  {r.Date.strftime('%A %d %b')}: {r.pred_dkk:.0f} DKK/MWh avg  "
+        f"({'↑ expensive' if r.pred_dkk - today_avg > 50 else '↓ cheap' if r.pred_dkk - today_avg < -50 else '→ similar to today'})"
         for _, r in fcst.iterrows()
     )
-    intraday = _build_hourly_day_summary(hourly_fcst)
+    intraday     = _build_hourly_day_summary(hourly_fcst)
+    cheap_windows = _build_cheap_windows(hourly_fcst)
 
-    return f"""You are an energy advisor helping a Danish household cut their electricity bill.
+    return f"""You are a friendly energy advisor helping a Danish household reduce their electricity bill.
 
-DK1 spot price forecast:
-Today's average: {today_avg:.0f} DKK/MWh
+DK1 spot price forecast — today's average: {today_avg:.0f} DKK/MWh
 
-DAILY AVERAGES:
+DAILY OUTLOOK:
 {daily_rows}
 
-INTRADAY PROFILE per day (cheapest hour is the best time to run appliances):
+CHEAPEST PERIODS to shift load to:
+{cheap_windows}
+
+INTRADAY DETAIL:
 {intraday}
 
-RULES:
-- Write 5 bullet points, each starting with •.
-- Every bullet must name a specific day AND a specific hour window from the data above.
-- Do NOT use "may", "could", "might", "perhaps", or "consider".
-- Give direct instructions, not suggestions: "Charge your EV on [day] between [H1] and [H2] — price is [X] DKK/MWh."
-- Cover: EV charging, dishwasher/washing machine, heat pump/electric heating, hot water boiler, and one other flexible load.
+Write 5 bullet points (•), each 2–3 sentences, 40–55 words.
+
+Style guide:
+- Group multiple appliances around the SAME cheap window rather than giving each a different time slot.
+- Use natural time language: "overnight", "early morning", "during the night" — not "between 03:00 and 04:00".
+- Be direct and practical but conversational, not robotic.
+- Explain briefly WHY that window is cheap (e.g. low overnight demand, high wind, etc.).
+- Cover across the 5 bullets: EV charging, washing/dishwasher, heat pump, hot water, and one other flexible load.
 - No preamble. No closing sentence."""
 
 
@@ -468,25 +546,43 @@ def fig_context(
     # so the two lines meet naturally with no gap and no overlap.
 
     if not hourly_fcst.empty:
-        has_bands = "sigma_dkk" in hourly_fcst.columns and hourly_fcst["sigma_dkk"].gt(0).any()
+        has_sigma = "sigma_dkk" in hourly_fcst.columns and hourly_fcst["sigma_dkk"].gt(0).any()
+        has_quantiles = (
+            "pred_q40_dkk" in hourly_fcst.columns
+            and hourly_fcst["pred_q40_dkk"].notna().any()
+        )
 
-        if has_bands:
+        if has_sigma:
             upper = hourly_fcst["pred_dkk"] + hourly_fcst["sigma_dkk"]
             lower = hourly_fcst["pred_dkk"] - hourly_fcst["sigma_dkk"]
-            # Upper boundary (invisible line, sets ceiling for fill)
             fig.add_trace(go.Scatter(
                 x=hourly_fcst["target_time"], y=upper,
                 mode="lines", line=dict(width=0),
                 hoverinfo="skip", showlegend=False,
             ))
-            # Lower boundary filled back to upper → ±1σ band
             fig.add_trace(go.Scatter(
                 x=hourly_fcst["target_time"], y=lower,
                 mode="lines", line=dict(width=0),
                 fill="tonexty",
-                fillcolor="rgba(167,139,250,0.18)",
+                fillcolor="rgba(167,139,250,0.13)",
                 hovertemplate="%{x|%d %b %H:%M}<br>±1σ: <b>%{y:.0f}</b><extra></extra>",
                 name="±1σ confidence",
+            ))
+
+        if has_quantiles:
+            fig.add_trace(go.Scatter(
+                x=hourly_fcst["target_time"], y=hourly_fcst["pred_q60_dkk"],
+                mode="lines", line=dict(width=0),
+                hovertemplate="%{x|%d %b %H:%M}<br>q60: <b>%{y:.0f} DKK/MWh</b><extra></extra>",
+                showlegend=False,
+            ))
+            fig.add_trace(go.Scatter(
+                x=hourly_fcst["target_time"], y=hourly_fcst["pred_q40_dkk"],
+                mode="lines", line=dict(width=0),
+                fill="tonexty",
+                fillcolor="rgba(167,139,250,0.30)",
+                hovertemplate="%{x|%d %b %H:%M}<br>q40: <b>%{y:.0f} DKK/MWh</b><extra></extra>",
+                name="q40–q60 band",
             ))
 
         # XGBoost hourly predictions
@@ -627,6 +723,134 @@ def fig_shap(shap_vals: pd.DataFrame, shap_feat: pd.DataFrame, top_n: int = 8) -
         }),
         "margin": dict(l=10, r=20, t=42, b=10),
     })
+    return fig
+
+
+def fig_weather(
+    weather: pd.DataFrame,
+    selected_vars: list[str],
+    ctx_days: int,
+    issue_ts: pd.Timestamp,
+    show_actuals: bool = True,
+) -> go.Figure:
+    """Actuals up to issue_ts, then 5-day fcst_* values — mirrors the XGBoost context chart."""
+    from plotly.subplots import make_subplots
+
+    # Resolve closest available issue_time in the weather data
+    available_issues = pd.to_datetime(weather["issue_time"].unique())
+    w_issue = min(available_issues, key=lambda x: abs(x - issue_ts))
+
+    hist_start  = w_issue - pd.Timedelta(days=ctx_days)
+    fcst_end    = w_issue + pd.Timedelta(days=5)
+
+    # Historical: deduplicate target_time, take actual_* columns
+    hist = (
+        weather[(weather["target_time"] >= hist_start) & (weather["target_time"] < w_issue)]
+        .groupby("target_time", as_index=False)
+        .first()
+        .sort_values("target_time")
+    )
+
+    # Forecast: rows from the resolved issue_time, target > issue
+    fcst = (
+        weather[
+            (weather["issue_time"] == w_issue)
+            & (weather["target_time"] > w_issue)
+            & (weather["target_time"] <= fcst_end)
+        ]
+        .sort_values("target_time")
+    )
+
+    n   = len(selected_vars)
+    fig = make_subplots(
+        rows=n, cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.05,
+        subplot_titles=selected_vars,
+    )
+
+    for i, var_name in enumerate(selected_vars, start=1):
+        fcst_col, actual_col, unit, color = WEATHER_VARS[var_name]
+
+        # Historical actuals
+        fig.add_trace(go.Scatter(
+            x=hist["target_time"], y=hist[actual_col],
+            mode="lines", line=dict(color=color, width=2),
+            name=f"{var_name} · actual",
+            legendgroup=var_name,
+            hovertemplate=f"%{{x|%d %b %H:%M}}<br>Actual: <b>%{{y:.1f}} {unit}</b><extra></extra>",
+        ), row=i, col=1)
+
+        # 5-day weather forecast
+        if not fcst.empty:
+            fig.add_trace(go.Scatter(
+                x=fcst["target_time"], y=fcst[fcst_col],
+                mode="lines", line=dict(color=color, width=2, dash="dot"),
+                name=f"{var_name} · forecast",
+                legendgroup=var_name,
+                hovertemplate=f"%{{x|%d %b %H:%M}}<br>Forecast: <b>%{{y:.1f}} {unit}</b><extra></extra>",
+            ), row=i, col=1)
+
+            if show_actuals and fcst[actual_col].notna().any():
+                fig.add_trace(go.Scatter(
+                    x=fcst["target_time"], y=fcst[actual_col],
+                    mode="lines", line=dict(color=C["good"], width=1.5, dash="dash"),
+                    name=f"{var_name} · actual (fcst window)",
+                    legendgroup=var_name,
+                    hovertemplate=f"%{{x|%d %b %H:%M}}<br>Actual: <b>%{{y:.1f}} {unit}</b><extra></extra>",
+                ), row=i, col=1)
+
+        fig.update_yaxes(
+            title_text=unit, row=i, col=1,
+            showgrid=True, gridcolor=C["grid"],
+            zeroline=False, linecolor=C["border"],
+            color=C["text"], tickfont=dict(size=10),
+        )
+        fig.update_xaxes(
+            showgrid=True, gridcolor=C["grid"],
+            zeroline=False, linecolor=C["border"],
+            color=C["text"], row=i, col=1,
+        )
+
+    # Shade the 5-day forecast window on every subplot row
+    if not fcst.empty:
+        x0 = fcst["target_time"].iloc[0]
+        x1 = fcst["target_time"].iloc[-1]
+        for row_i in range(1, n + 1):
+            fig.add_vrect(
+                x0=x0, x1=x1,
+                fillcolor="rgba(167,139,250,0.08)", layer="below", line_width=0,
+                # Only annotate on the first row, positioned inside so it doesn't clip
+                annotation_text="5-day forecast" if row_i == 1 else "",
+                annotation_position="top right",
+                annotation_font_color=C["fcst"], annotation_font_size=10,
+                row=row_i, col=1,
+            )
+
+    fig.update_layout(
+        template="plotly_dark",
+        paper_bgcolor=C["card"],
+        plot_bgcolor=C["card"],
+        font=dict(color=C["text"], size=12),
+        margin=dict(l=10, r=10, t=48, b=90),
+        height=200 * n + 90,
+        hoverlabel=dict(bgcolor=C["bg"], bordercolor=C["border"]),
+        legend=dict(
+            orientation="h", y=-0.08, x=0.5, xanchor="center",
+            bgcolor="rgba(0,0,0,0)", font=dict(size=10),
+            groupclick="toggleitem",
+            tracegroupgap=4,
+        ),
+        title=dict(
+            text=f"Weather · DK1 West · {ctx_days}d history + 5-day forecast  "
+                 f"<span style='font-size:12px;color:{C['muted']};'>"
+                 f"solid = actual · dotted = forecast</span>",
+            font_size=13,
+        ),
+    )
+    for ann in fig.layout.annotations:
+        ann.font.color = C["muted"]
+        ann.font.size  = 11
     return fig
 
 
@@ -892,6 +1116,46 @@ def main() -> None:
             else:
                 st.info("SHAP data unavailable — run `XG_Boost_full_Res.py` to generate `shap_day1_*.parquet`.")
 
+    # ── Weather explorer ──────────────────────────────────────────────────────
+    weather = load_weather_data()
+    if not weather.empty:
+        st.markdown("<div class='section'>Weather explorer · DK1 West · actual vs forecast</div>", unsafe_allow_html=True)
+
+        # Variable toggles
+        tog_cols = st.columns(4)
+        show_wind      = tog_cols[0].toggle("Wind 100m",   value=True, key="w_wind")
+        show_solar     = tog_cols[1].toggle("Solar",        value=True, key="w_solar")
+        show_temp      = tog_cols[2].toggle("Temperature",  value=True, key="w_temp")
+        show_w_actuals = tog_cols[3].toggle("Show actuals in forecast window", value=True, key="w_actuals")
+
+        selected_weather = [
+            v for v, on in [
+                ("Wind 100m",   show_wind),
+                ("Solar",       show_solar),
+                ("Temperature", show_temp),
+            ] if on
+        ]
+
+        # History window — reuses the same issue_ts as the XGBoost forecast
+        w_days = st.select_slider(
+            "Weather history window",
+            options=[3, 5, 7, 14, 21, 30],
+            value=7,
+            format_func=lambda x: f"{x} days",
+            key="w_days",
+        )
+
+        # Resolve the issue timestamp (same logic as the price forecast)
+        w_issue_ts = _resolve_issue_time(raw_preds, selected_issue) if not raw_preds.empty else pd.Timestamp(weather["issue_time"].max())
+
+        if selected_weather:
+            st.plotly_chart(
+                fig_weather(weather, selected_weather, w_days, w_issue_ts, show_w_actuals),
+                use_container_width=True, config={"displayModeBar": False},
+            )
+        else:
+            st.info("Select at least one weather variable above.")
+
     # ── Groq AI section ───────────────────────────────────────────────────────
     st.markdown("<div class='section'>AI insights · Groq Llama 3.3 70B</div>", unsafe_allow_html=True)
 
@@ -909,7 +1173,7 @@ def main() -> None:
             else:
                 if st.button("Generate forecast reasoning", key="btn_r", type="primary"):
                     with st.spinner("Asking Groq…"):
-                        text = groq_call(prompt_reasoning(fcst, today_avg, fcst["issue_date"].iloc[0], hourly_fcst, imp_df))
+                        text = groq_call(prompt_reasoning(fcst, today_avg, fcst["issue_date"].iloc[0], hourly_fcst, weather))
                         st.session_state["_r"] = text
 
                 if "_r" in st.session_state:

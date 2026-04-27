@@ -22,6 +22,7 @@ models/
 # Data files (can be large; users fetch their own)
 processed_data/*.csv
 data/*.parquet
+!data/weather_dk1_dashboard.parquet
 
 # Environment
 .env

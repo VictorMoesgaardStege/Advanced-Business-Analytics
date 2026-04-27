@@ -170,6 +170,12 @@ def simulate_forecasts(actuals: pd.DataFrame, err_params: dict) -> pd.DataFrame:
                 for var in WEATHER_VARS:
                     actual_val = float(actual_row[var])
 
+                    # Solar radiation is physically zero at night — no forecast error to draw
+                    if var == "shortwave_radiation" and actual_val < 0.2:
+                        rec[f"fcst_{var}"]   = 0.0
+                        rec[f"actual_{var}"] = actual_val
+                        continue
+
                     # Draw noise from N(mean_error(h), std_error(h))
                     noise = rng.normal(
                         loc=float(err_params[var]["mean"][h_idx]),
@@ -229,6 +235,18 @@ def main():
     for col in df.columns:
         print(f"    {col}")
     print(f"\n  Sample (first 3 rows):")
+
+    print("\n[5/5] Exporting slim dashboard file (DK1_west only) …")
+    dashboard_cols = [
+        "region", "issue_time", "target_time", "horizon_h",
+        "fcst_wind_speed_100m",    "actual_wind_speed_100m",
+        "fcst_shortwave_radiation","actual_shortwave_radiation",
+        "fcst_temperature_2m",     "actual_temperature_2m",
+    ]
+    dash_df   = df.loc[df["region"] == "DK1_west", dashboard_cols].copy()
+    dash_path = DATA_DIR / "weather_dk1_dashboard.parquet"
+    dash_df.to_parquet(dash_path, index=False, compression="snappy")
+    print(f"  Output : {dash_path}  ({dash_path.stat().st_size / 1e6:.1f} MB  |  {len(dash_df):,} rows)")
     print(df.head(3).to_string())
     print("\nDone.")
 
