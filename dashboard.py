@@ -358,11 +358,16 @@ PRICES (daily avg, peak, cheapest):
 WEATHER FORECAST (avg per day):
 {weather_str}
 
-Write EXACTLY 4 bullet points (•). Each bullet: 3 sentences, 50–70 words.
-- Sentence 1: describe the weather conditions for that day using specific numbers (wind, solar, temp).
-- Sentence 2: state the resulting price outcome with specific numbers (avg, peak, cheapest hour).
-- Sentence 3: explain the Nordic market mechanism behind the link — e.g. how wind oversupply pushes out gas peakers, how cold temperatures drive heat-pump load, how low solar forces more thermal dispatch.
-- No hedging words (may/could/might/perhaps). No preamble. No closing sentence. Only the 4 bullets."""
+Write EXACTLY 4 bullet points (•), each 50–70 words. Each bullet covers one key price driver across the 5-day window.
+
+Write like a Nordic energy market analyst giving a verbal briefing — analytical, not descriptive. Do NOT list weather numbers sentence by sentence. Instead, use weather and price data as evidence to support a broader market argument, for example:
+- "Prices are forecast to rise sharply mid-week as wind drops below 3 m/s, removing the primary source of low-cost generation and forcing the market to rely on expensive thermal capacity."
+- "The sub-zero temperatures on [day] will amplify heat-pump demand across Scandinavia, tightening the supply-demand balance at peak hours and pushing the 18:00 price to [X] DKK/MWh."
+
+Rules:
+- Reference specific numbers only where they make the argument stronger, not in every sentence.
+- Do NOT use "may", "could", "might", or "perhaps".
+- No preamble. No closing sentence. Only the 4 bullets."""
 
 
 def prompt_household(
