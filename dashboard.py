@@ -15,7 +15,7 @@ METRICS_FILE = Path("outputs/model/metrics.csv")
 MODEL_FILE        = Path("outputs/model/final_day_models.joblib")
 SHAP_VALUES_FILE   = Path("outputs/model/shap_day1_values.parquet")
 SHAP_FEATURES_FILE = Path("outputs/model/shap_day1_features.parquet")
-WEATHER_FILE       = Path("data/forsoeg_dataset.parquet")
+WEATHER_FILE       = Path("data/weather_dk1_dashboard.parquet")
 PRICE_AREA  = "DK1"
 EUR_DKK_FB  = 7.46   # fallback exchange rate
 
@@ -175,16 +175,11 @@ def load_shap_data() -> tuple[pd.DataFrame, pd.DataFrame]:
 
 @st.cache_data(show_spinner=False)
 def load_weather_data() -> pd.DataFrame:
-    """Load DK1_west simulated weather forecasts and actuals from forsoeg_dataset.parquet."""
+    """Load pre-aggregated DK1_west weather forecasts and actuals."""
     if not WEATHER_FILE.exists():
         return pd.DataFrame()
     try:
-        df = pd.read_parquet(
-            WEATHER_FILE,
-            columns=["region", "issue_time", "target_time", "horizon_h"]
-            + [c for var in WEATHER_VARS.values() for c in (var[0], var[1])],
-        )
-        df = df[df["region"] == "DK1_west"].copy()
+        df = pd.read_parquet(WEATHER_FILE)
         df["target_time"] = pd.to_datetime(df["target_time"])
         df["issue_time"]  = pd.to_datetime(df["issue_time"])
         return df.sort_values("target_time").reset_index(drop=True)
