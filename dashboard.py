@@ -23,7 +23,6 @@ WEATHER_VARS = {
     "Wind 100m":   ("fcst_wind_speed_100m",    "actual_wind_speed_100m",    "m/s",  "#38bdf8"),
     "Solar":       ("fcst_shortwave_radiation", "actual_shortwave_radiation", "W/m²", "#fbbf24"),
     "Temperature": ("fcst_temperature_2m",      "actual_temperature_2m",      "°C",   "#f87171"),
-    "Cloud cover": ("fcst_cloud_cover",         "actual_cloud_cover",         "%",    "#94a3b8"),
 }
 
 C = {
@@ -657,6 +656,7 @@ def fig_weather(
     selected_vars: list[str],
     ctx_days: int,
     issue_ts: pd.Timestamp,
+    show_actuals: bool = True,
 ) -> go.Figure:
     """Actuals up to issue_ts, then 5-day fcst_* values — mirrors the XGBoost context chart."""
     from plotly.subplots import make_subplots
@@ -715,6 +715,15 @@ def fig_weather(
                 legendgroup=var_name,
                 hovertemplate=f"%{{x|%d %b %H:%M}}<br>Forecast: <b>%{{y:.1f}} {unit}</b><extra></extra>",
             ), row=i, col=1)
+
+            if show_actuals and fcst[actual_col].notna().any():
+                fig.add_trace(go.Scatter(
+                    x=fcst["target_time"], y=fcst[actual_col],
+                    mode="lines", line=dict(color=C["good"], width=1.5, dash="dash"),
+                    name=f"{var_name} · actual (fcst window)",
+                    legendgroup=var_name,
+                    hovertemplate=f"%{{x|%d %b %H:%M}}<br>Actual: <b>%{{y:.1f}} {unit}</b><extra></extra>",
+                ), row=i, col=1)
 
         fig.update_yaxes(
             title_text=unit, row=i, col=1,
@@ -1034,17 +1043,16 @@ def main() -> None:
 
         # Variable toggles
         tog_cols = st.columns(4)
-        show_wind  = tog_cols[0].toggle("Wind 100m",   value=True,  key="w_wind")
-        show_solar = tog_cols[1].toggle("Solar",        value=True,  key="w_solar")
-        show_temp  = tog_cols[2].toggle("Temperature",  value=True,  key="w_temp")
-        show_cloud = tog_cols[3].toggle("Cloud cover",  value=False, key="w_cloud")
+        show_wind      = tog_cols[0].toggle("Wind 100m",   value=True, key="w_wind")
+        show_solar     = tog_cols[1].toggle("Solar",        value=True, key="w_solar")
+        show_temp      = tog_cols[2].toggle("Temperature",  value=True, key="w_temp")
+        show_w_actuals = tog_cols[3].toggle("Show actuals in forecast window", value=True, key="w_actuals")
 
         selected_weather = [
             v for v, on in [
                 ("Wind 100m",   show_wind),
                 ("Solar",       show_solar),
                 ("Temperature", show_temp),
-                ("Cloud cover", show_cloud),
             ] if on
         ]
 
@@ -1062,7 +1070,7 @@ def main() -> None:
 
         if selected_weather:
             st.plotly_chart(
-                fig_weather(weather, selected_weather, w_days, w_issue_ts),
+                fig_weather(weather, selected_weather, w_days, w_issue_ts, show_w_actuals),
                 use_container_width=True, config={"displayModeBar": False},
             )
         else:
