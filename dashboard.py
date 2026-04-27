@@ -139,7 +139,7 @@ def compute_forecast_bands(_raw: pd.DataFrame, eur_dkk: float) -> tuple[dict, di
     valid = valid[valid["DayAheadPriceEUR"] > 0].copy()
     if valid.empty:
         return {}, {}
-    valid["residual_eur"] = valid["predicted"] - valid["DayAheadPriceEUR"]
+    valid["residual_eur"] = valid["DayAheadPriceEUR"] - valid["predicted"]
     grp = valid.groupby("horizon_h")["residual_eur"]
     p45 = (grp.quantile(0.25) * eur_dkk).to_dict()
     p55 = (grp.quantile(0.75) * eur_dkk).to_dict()
