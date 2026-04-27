@@ -770,13 +770,14 @@ def fig_weather(
         paper_bgcolor=C["card"],
         plot_bgcolor=C["card"],
         font=dict(color=C["text"], size=12),
-        margin=dict(l=10, r=10, t=48, b=10),
-        height=200 * n,
+        margin=dict(l=10, r=10, t=48, b=90),
+        height=200 * n + 90,
         hoverlabel=dict(bgcolor=C["bg"], bordercolor=C["border"]),
         legend=dict(
-            orientation="h", y=1.04, x=1, xanchor="right",
-            bgcolor="rgba(0,0,0,0)", font=dict(size=11),
+            orientation="h", y=-0.08, x=0.5, xanchor="center",
+            bgcolor="rgba(0,0,0,0)", font=dict(size=10),
             groupclick="toggleitem",
+            tracegroupgap=4,
         ),
         title=dict(
             text=f"Weather · DK1 West · {ctx_days}d history + 5-day forecast  "
