@@ -750,16 +750,20 @@ def fig_weather(
             color=C["text"], row=i, col=1,
         )
 
-    # Shade the 5-day forecast window on the top subplot only
+    # Shade the 5-day forecast window on every subplot row
     if not fcst.empty:
-        fig.add_vrect(
-            x0=fcst["target_time"].iloc[0],
-            x1=fcst["target_time"].iloc[-1],
-            fillcolor="rgba(167,139,250,0.08)", layer="below", line_width=0,
-            annotation_text="5-day forecast", annotation_position="top left",
-            annotation_font_color=C["fcst"], annotation_font_size=11,
-            row=1, col=1,
-        )
+        x0 = fcst["target_time"].iloc[0]
+        x1 = fcst["target_time"].iloc[-1]
+        for row_i in range(1, n + 1):
+            fig.add_vrect(
+                x0=x0, x1=x1,
+                fillcolor="rgba(167,139,250,0.08)", layer="below", line_width=0,
+                # Only annotate on the first row, positioned inside so it doesn't clip
+                annotation_text="5-day forecast" if row_i == 1 else "",
+                annotation_position="top right",
+                annotation_font_color=C["fcst"], annotation_font_size=10,
+                row=row_i, col=1,
+            )
 
     fig.update_layout(
         template="plotly_dark",
