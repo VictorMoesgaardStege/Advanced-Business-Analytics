@@ -52,8 +52,8 @@ _XGB_BASE = dict(
 _XGB_Q_BASE = dict(**_XGB_BASE, objective="reg:quantileerror", n_estimators=300)
 XGB_WF    = dict(**_XGB_Q_BASE, quantile_alpha=0.50)   # MAE-optimal (median)
 XGB_FINAL = dict(**{**_XGB_Q_BASE, "n_estimators": 500}, quantile_alpha=0.50)
-XGB_Q40   = dict(**_XGB_Q_BASE, quantile_alpha=0.40)
-XGB_Q60   = dict(**_XGB_Q_BASE, quantile_alpha=0.60)
+XGB_Q10   = dict(**_XGB_Q_BASE, quantile_alpha=0.10)
+XGB_Q90   = dict(**_XGB_Q_BASE, quantile_alpha=0.90)
 
 DAY_GROUPS = {1: (1, 24), 2: (25, 48), 3: (49, 72), 4: (73, 96), 5: (97, 120)}
 
@@ -184,17 +184,19 @@ def walk_forward(df: pd.DataFrame):
             continue
 
         models     = fit_day_models(train, XGB_WF)
-        models_q40 = fit_day_models(train, XGB_Q40)
-        models_q60 = fit_day_models(train, XGB_Q60)
+        models_q10 = fit_day_models(train, XGB_Q10)
+        models_q90 = fit_day_models(train, XGB_Q90)
         test_r = test.reset_index(drop=True)
         preds     = predict_day_models(models,     test_r)
-        preds_q40 = predict_day_models(models_q40, test_r)
-        preds_q60 = predict_day_models(models_q60, test_r)
+        preds_q10 = predict_day_models(models_q10, test_r)
+        preds_q90 = predict_day_models(models_q90, test_r)
 
         result = test_r[["issue_time", "target_time", "horizon_h", TARGET_COL]].copy()
-        result["predicted"]  = preds
-        result["pred_q40"]   = preds_q40
-        result["pred_q60"]   = preds_q60
+        # Enforce q10 ≤ q50 ≤ q90 row-wise (fixes quantile crossing from independent models)
+        sorted_q = np.sort(np.column_stack([preds_q10, preds, preds_q90]), axis=1)
+        result["pred_q10"]   = sorted_q[:, 0]
+        result["predicted"]  = sorted_q[:, 1]
+        result["pred_q90"]   = sorted_q[:, 2]
         result["fold"]       = i
         result["fold_end"]   = train_end
         all_preds.append(result)
