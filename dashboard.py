@@ -277,7 +277,7 @@ def groq_call(prompt: str) -> str:
         resp   = client.chat.completions.create(
             model    = "llama-3.3-70b-versatile",
             messages = [{"role": "user", "content": prompt}],
-            max_tokens  = 480,
+            max_tokens  = 650,
             temperature = 0.4,
         )
         return (resp.choices[0].message.content or "").strip()
@@ -358,9 +358,10 @@ PRICES (daily avg, peak, cheapest):
 WEATHER FORECAST (avg per day):
 {weather_str}
 
-Write EXACTLY 4 bullet points (•). Each bullet: 2 sentences, max 35 words total.
-- Sentence 1: state the weather condition with a number and the resulting price with a number.
-- Sentence 2: explain the market mechanism in plain English (e.g. excess wind supply, heating demand, solar displacement).
+Write EXACTLY 4 bullet points (•). Each bullet: 3 sentences, 50–70 words.
+- Sentence 1: describe the weather conditions for that day using specific numbers (wind, solar, temp).
+- Sentence 2: state the resulting price outcome with specific numbers (avg, peak, cheapest hour).
+- Sentence 3: explain the Nordic market mechanism behind the link — e.g. how wind oversupply pushes out gas peakers, how cold temperatures drive heat-pump load, how low solar forces more thermal dispatch.
 - No hedging words (may/could/might/perhaps). No preamble. No closing sentence. Only the 4 bullets."""
 
 
