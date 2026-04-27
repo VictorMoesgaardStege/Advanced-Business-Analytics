@@ -306,14 +306,32 @@ def _build_hourly_day_summary(hourly_fcst: pd.DataFrame) -> str:
     return "\n".join(lines)
 
 
-def _build_importance_string(imp_df: pd.DataFrame, top_n: int = 6) -> str:
-    """Format top-N feature importances for the LLM prompt."""
-    if imp_df.empty:
-        return "  (feature importances not available)"
-    rows = []
-    for _, r in imp_df.head(top_n).iterrows():
-        rows.append(f"  {r['feature']}: {r['importance']:.4f}")
-    return "\n".join(rows)
+def _build_weather_summary(weather: pd.DataFrame, issue_ts: pd.Timestamp) -> str:
+    """Per-day avg wind speed, solar radiation, and temperature for the 5-day forecast window."""
+    if weather.empty:
+        return "  (weather data unavailable)"
+    available = pd.to_datetime(weather["issue_time"].unique())
+    w_issue = min(available, key=lambda x: abs(x - issue_ts))
+    fcst = (
+        weather[
+            (weather["issue_time"] == w_issue)
+            & (weather["target_time"] > w_issue)
+            & (weather["target_time"] <= w_issue + pd.Timedelta(days=5))
+        ]
+        .copy()
+    )
+    if fcst.empty:
+        return "  (weather data unavailable)"
+    fcst["_date"] = fcst["target_time"].dt.normalize()
+    lines = []
+    for date, grp in fcst.groupby("_date"):
+        lines.append(
+            f"  {pd.Timestamp(date).strftime('%a %d %b')}:  "
+            f"wind {grp['fcst_wind_speed_100m'].mean():.1f} m/s  |  "
+            f"solar {grp['fcst_shortwave_radiation'].mean():.0f} W/m²  |  "
+            f"temp {grp['fcst_temperature_2m'].mean():.1f} °C"
+        )
+    return "\n".join(lines)
 
 
 def prompt_reasoning(
@@ -321,35 +339,31 @@ def prompt_reasoning(
     today_avg: float,
     issue_date: pd.Timestamp,
     hourly_fcst: pd.DataFrame,
-    imp_df: pd.DataFrame,
+    weather: pd.DataFrame,
 ) -> str:
     daily_rows = "\n".join(
         f"  {r.Date.strftime('%a %d %b')}: {r.pred_dkk:.0f} DKK/MWh  ({r.pred_dkk - today_avg:+.0f} vs today)"
         for _, r in fcst.iterrows()
     )
-    intraday = _build_hourly_day_summary(hourly_fcst)
-    feat_str = _build_importance_string(imp_df)
+    intraday    = _build_hourly_day_summary(hourly_fcst)
+    weather_str = _build_weather_summary(weather, issue_date)
 
-    return f"""You are an electricity market analyst specialising in Nordic energy markets.
+    return f"""You are a Nordic electricity market analyst. Be direct and concise.
 
-DK1 (West Denmark) XGBoost forecast, issued {issue_date.strftime('%d %b %Y')}:
-Today's average: {today_avg:.0f} DKK/MWh
+DK1 forecast issued {issue_date.strftime('%d %b %Y')} — today avg: {today_avg:.0f} DKK/MWh
 
-DAILY AVERAGES (5-day outlook):
-{daily_rows}
-
-INTRADAY PROFILE per day (peak hour, cheapest hour, avg — all DKK/MWh):
+PRICES (daily avg, peak, cheapest):
 {intraday}
 
-MODEL FEATURE IMPORTANCES (gain, Day 1 model — higher = more influential):
-{feat_str}
+WEATHER FORECAST (avg per day):
+{weather_str}
 
-RULES:
-- Write exactly 4 bullet points, each starting with •.
-- Every bullet must cite at least one specific number from the data above (price, hour, date, or importance score).
-- Do NOT use the words "may", "could", "might", "likely", "possibly", or "perhaps".
-- Explain WHY prices move on those specific days and hours using the feature importances as evidence.
-- Be concise. No preamble. No closing sentence."""
+Write EXACTLY 4 bullet points starting with •. Each bullet must:
+- Be max 2 sentences.
+- Cite at least one specific price AND one specific weather value from above.
+- Explain a concrete cause-effect between the weather and the price pattern.
+- Never use "may", "could", "might", "possibly", or "perhaps".
+No preamble. No closing sentence. Output only the 4 bullets."""
 
 
 def prompt_household(
@@ -1093,7 +1107,7 @@ def main() -> None:
             else:
                 if st.button("Generate forecast reasoning", key="btn_r", type="primary"):
                     with st.spinner("Asking Groq…"):
-                        text = groq_call(prompt_reasoning(fcst, today_avg, fcst["issue_date"].iloc[0], hourly_fcst, imp_df))
+                        text = groq_call(prompt_reasoning(fcst, today_avg, fcst["issue_date"].iloc[0], hourly_fcst, weather))
                         st.session_state["_r"] = text
 
                 if "_r" in st.session_state:
