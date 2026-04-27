@@ -277,7 +277,7 @@ def groq_call(prompt: str) -> str:
         resp   = client.chat.completions.create(
             model    = "llama-3.3-70b-versatile",
             messages = [{"role": "user", "content": prompt}],
-            max_tokens  = 320,
+            max_tokens  = 480,
             temperature = 0.4,
         )
         return (resp.choices[0].message.content or "").strip()
@@ -358,11 +358,10 @@ PRICES (daily avg, peak, cheapest):
 WEATHER FORECAST (avg per day):
 {weather_str}
 
-Write EXACTLY 4 bullet points. Format: "• [day]: [weather fact] → [price impact]."
-Rules:
-- ONE sentence per bullet. Hard limit: 20 words per bullet.
-- Must include a number from the weather table and a number from the price table.
-- No hedging words. No preamble. No closing. Only the 4 bullets."""
+Write EXACTLY 4 bullet points (•). Each bullet: 2 sentences, max 35 words total.
+- Sentence 1: state the weather condition with a number and the resulting price with a number.
+- Sentence 2: explain the market mechanism in plain English (e.g. excess wind supply, heating demand, solar displacement).
+- No hedging words (may/could/might/perhaps). No preamble. No closing sentence. Only the 4 bullets."""
 
 
 def prompt_household(
