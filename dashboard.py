@@ -141,8 +141,8 @@ def compute_forecast_bands(_raw: pd.DataFrame, eur_dkk: float) -> tuple[dict, di
         return {}, {}
     valid["residual_eur"] = valid["predicted"] - valid["DayAheadPriceEUR"]
     grp = valid.groupby("horizon_h")["residual_eur"]
-    p45 = (grp.quantile(0.45) * eur_dkk).to_dict()
-    p55 = (grp.quantile(0.55) * eur_dkk).to_dict()
+    p45 = (grp.quantile(0.25) * eur_dkk).to_dict()
+    p55 = (grp.quantile(0.75) * eur_dkk).to_dict()
     return p45, p55
 
 
@@ -555,18 +555,18 @@ def fig_context(
             fig.add_trace(go.Scatter(
                 x=hourly_fcst["target_time"], y=hourly_fcst["upper_dkk"],
                 mode="lines", line=dict(width=0),
-                hovertemplate="%{x|%d %b %H:%M}<br>p55: <b>%{y:.0f} DKK/MWh</b><extra></extra>",
-                name="p55 upper",
+                hovertemplate="%{x|%d %b %H:%M}<br>p75: <b>%{y:.0f} DKK/MWh</b><extra></extra>",
+                name="p75 upper",
                 showlegend=False,
             ))
-            # Lower boundary filled back to upper → asymmetric p45–p55 band
+            # Lower boundary filled back to upper → asymmetric p25–p75 band
             fig.add_trace(go.Scatter(
                 x=hourly_fcst["target_time"], y=hourly_fcst["lower_dkk"],
                 mode="lines", line=dict(width=0),
                 fill="tonexty",
                 fillcolor="rgba(167,139,250,0.20)",
-                hovertemplate="%{x|%d %b %H:%M}<br>p45: <b>%{y:.0f} DKK/MWh</b><extra></extra>",
-                name="p45–p55 band",
+                hovertemplate="%{x|%d %b %H:%M}<br>p25: <b>%{y:.0f} DKK/MWh</b><extra></extra>",
+                name="p25–p75 band",
             ))
 
         # XGBoost hourly predictions
