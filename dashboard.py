@@ -130,18 +130,20 @@ def load_metrics() -> pd.DataFrame:
 
 
 @st.cache_data(show_spinner=False)
-def compute_forecast_bands(_raw: pd.DataFrame, eur_dkk: float) -> dict[int, float]:
-    """Return {horizon_h: sigma_dkk} from historical walk-forward residuals."""
+@st.cache_data(show_spinner=False)
+def compute_forecast_bands(_raw: pd.DataFrame, eur_dkk: float) -> tuple[dict, dict]:
+    """Return ({horizon_h: p45_dkk}, {horizon_h: p55_dkk}) from walk-forward residuals."""
     if _raw.empty:
-        return {}
+        return {}, {}
     valid = _raw.dropna(subset=["predicted", "DayAheadPriceEUR"])
-    valid = valid[valid["DayAheadPriceEUR"] > 0]
+    valid = valid[valid["DayAheadPriceEUR"] > 0].copy()
     if valid.empty:
-        return {}
-    valid = valid.copy()
+        return {}, {}
     valid["residual_eur"] = valid["predicted"] - valid["DayAheadPriceEUR"]
-    sigma = valid.groupby("horizon_h")["residual_eur"].std() * eur_dkk
-    return sigma.to_dict()
+    grp = valid.groupby("horizon_h")["residual_eur"]
+    p45 = (grp.quantile(0.45) * eur_dkk).to_dict()
+    p55 = (grp.quantile(0.55) * eur_dkk).to_dict()
+    return p45, p55
 
 
 @st.cache_data(show_spinner=False)
@@ -235,9 +237,10 @@ def process_predictions_hourly(
     raw: pd.DataFrame,
     eur_dkk: float,
     selected: pd.Timestamp | None = None,
-    bands: dict[int, float] | None = None,
+    p45: dict[int, float] | None = None,
+    p55: dict[int, float] | None = None,
 ) -> pd.DataFrame:
-    """Return all 120 hourly predictions for the selected issue_time, with ±1σ bands."""
+    """Return all 120 hourly predictions with asymmetric p45/p55 residual bands."""
     if raw.empty:
         return pd.DataFrame()
 
@@ -248,8 +251,9 @@ def process_predictions_hourly(
     future["pred_dkk"]   = future["predicted"]        * eur_dkk
     future["actual_dkk"] = future["DayAheadPriceEUR"] * eur_dkk
     future["issue_date"] = issue_ts.normalize()
-    future["sigma_dkk"]  = future["horizon_h"].map(bands or {}).fillna(0.0)
-    return future[["target_time", "horizon_h", "pred_dkk", "actual_dkk", "issue_date", "sigma_dkk"]].reset_index(drop=True)
+    future["lower_dkk"]  = future["pred_dkk"] + future["horizon_h"].map(p45 or {}).fillna(0.0)
+    future["upper_dkk"]  = future["pred_dkk"] + future["horizon_h"].map(p55 or {}).fillna(0.0)
+    return future[["target_time", "horizon_h", "pred_dkk", "actual_dkk", "issue_date", "lower_dkk", "upper_dkk"]].reset_index(drop=True)
 
 
 def daily_history(prices: pd.DataFrame) -> pd.DataFrame:
@@ -540,25 +544,29 @@ def fig_context(
     # so the two lines meet naturally with no gap and no overlap.
 
     if not hourly_fcst.empty:
-        has_bands = "sigma_dkk" in hourly_fcst.columns and hourly_fcst["sigma_dkk"].gt(0).any()
+        has_bands = (
+            "lower_dkk" in hourly_fcst.columns
+            and "upper_dkk" in hourly_fcst.columns
+            and hourly_fcst["upper_dkk"].ne(hourly_fcst["lower_dkk"]).any()
+        )
 
         if has_bands:
-            upper = hourly_fcst["pred_dkk"] + hourly_fcst["sigma_dkk"]
-            lower = hourly_fcst["pred_dkk"] - hourly_fcst["sigma_dkk"]
-            # Upper boundary (invisible line, sets ceiling for fill)
+            # Upper boundary (invisible, sets ceiling for fill)
             fig.add_trace(go.Scatter(
-                x=hourly_fcst["target_time"], y=upper,
+                x=hourly_fcst["target_time"], y=hourly_fcst["upper_dkk"],
                 mode="lines", line=dict(width=0),
-                hoverinfo="skip", showlegend=False,
+                hovertemplate="%{x|%d %b %H:%M}<br>p55: <b>%{y:.0f} DKK/MWh</b><extra></extra>",
+                name="p55 upper",
+                showlegend=False,
             ))
-            # Lower boundary filled back to upper → ±1σ band
+            # Lower boundary filled back to upper → asymmetric p45–p55 band
             fig.add_trace(go.Scatter(
-                x=hourly_fcst["target_time"], y=lower,
+                x=hourly_fcst["target_time"], y=hourly_fcst["lower_dkk"],
                 mode="lines", line=dict(width=0),
                 fill="tonexty",
-                fillcolor="rgba(167,139,250,0.18)",
-                hovertemplate="%{x|%d %b %H:%M}<br>±1σ: <b>%{y:.0f}</b><extra></extra>",
-                name="±1σ confidence",
+                fillcolor="rgba(167,139,250,0.20)",
+                hovertemplate="%{x|%d %b %H:%M}<br>p45: <b>%{y:.0f} DKK/MWh</b><extra></extra>",
+                name="p45–p55 band",
             ))
 
         # XGBoost hourly predictions
@@ -961,9 +969,9 @@ def main() -> None:
         prices, pd.DataFrame(), metrics, raw_preds
     )
 
-    bands       = compute_forecast_bands(raw_preds, eur_dkk)
+    p45, p55    = compute_forecast_bands(raw_preds, eur_dkk)
     fcst        = process_predictions(raw_preds, eur_dkk, selected_issue)
-    hourly_fcst = process_predictions_hourly(raw_preds, eur_dkk, selected_issue, bands)
+    hourly_fcst = process_predictions_hourly(raw_preds, eur_dkk, selected_issue, p45, p55)
     hist        = daily_history(prices)
 
     # Anchor "today" to the model's latest issue date for a consistent time story
