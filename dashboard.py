@@ -655,61 +655,69 @@ def fig_shap(shap_vals: pd.DataFrame, shap_feat: pd.DataFrame, top_n: int = 8) -
 def fig_weather(
     weather: pd.DataFrame,
     selected_vars: list[str],
-    days_back: int,
-    horizon_h: int,
+    ctx_days: int,
+    issue_ts: pd.Timestamp,
 ) -> go.Figure:
-    """Subplots: one row per selected weather variable, actual vs forecast."""
+    """Actuals up to issue_ts, then 5-day fcst_* values — mirrors the XGBoost context chart."""
     from plotly.subplots import make_subplots
 
-    n = len(selected_vars)
-    fig = make_subplots(
-        rows=n, cols=1,
-        shared_xaxes=True,
-        vertical_spacing=0.06,
-        subplot_titles=selected_vars,
-    )
+    # Resolve closest available issue_time in the weather data
+    available_issues = pd.to_datetime(weather["issue_time"].unique())
+    w_issue = min(available_issues, key=lambda x: abs(x - issue_ts))
 
-    end   = weather["target_time"].max()
-    start = end - pd.Timedelta(days=days_back)
+    hist_start  = w_issue - pd.Timedelta(days=ctx_days)
+    fcst_end    = w_issue + pd.Timedelta(days=5)
 
-    actuals = (
-        weather[weather["target_time"].between(start, end)]
+    # Historical: deduplicate target_time, take actual_* columns
+    hist = (
+        weather[(weather["target_time"] >= hist_start) & (weather["target_time"] < w_issue)]
         .groupby("target_time", as_index=False)
         .first()
         .sort_values("target_time")
     )
-    forecasts = (
+
+    # Forecast: rows from the resolved issue_time, target > issue
+    fcst = (
         weather[
-            (weather["horizon_h"] == horizon_h)
-            & weather["target_time"].between(start, end)
+            (weather["issue_time"] == w_issue)
+            & (weather["target_time"] > w_issue)
+            & (weather["target_time"] <= fcst_end)
         ]
         .sort_values("target_time")
+    )
+
+    n   = len(selected_vars)
+    fig = make_subplots(
+        rows=n, cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.05,
+        subplot_titles=selected_vars,
     )
 
     for i, var_name in enumerate(selected_vars, start=1):
         fcst_col, actual_col, unit, color = WEATHER_VARS[var_name]
 
+        # Historical actuals
         fig.add_trace(go.Scatter(
-            x=actuals["target_time"], y=actuals[actual_col],
-            mode="lines", line=dict(color=color, width=1.8),
+            x=hist["target_time"], y=hist[actual_col],
+            mode="lines", line=dict(color=color, width=2),
             name=f"{var_name} · actual",
-            hovertemplate=f"%{{x|%d %b %H:%M}}<br>Actual: <b>%{{y:.1f}} {unit}</b><extra></extra>",
             legendgroup=var_name,
+            hovertemplate=f"%{{x|%d %b %H:%M}}<br>Actual: <b>%{{y:.1f}} {unit}</b><extra></extra>",
         ), row=i, col=1)
 
-        if not forecasts.empty:
+        # 5-day weather forecast
+        if not fcst.empty:
             fig.add_trace(go.Scatter(
-                x=forecasts["target_time"], y=forecasts[fcst_col],
-                mode="lines", line=dict(color=color, width=1.5, dash="dot"),
-                name=f"{var_name} · {horizon_h}h forecast",
-                hovertemplate=f"%{{x|%d %b %H:%M}}<br>{horizon_h}h fcst: <b>%{{y:.1f}} {unit}</b><extra></extra>",
+                x=fcst["target_time"], y=fcst[fcst_col],
+                mode="lines", line=dict(color=color, width=2, dash="dot"),
+                name=f"{var_name} · forecast",
                 legendgroup=var_name,
-                legendgrouptitle_text=var_name if i == 1 else "",
+                hovertemplate=f"%{{x|%d %b %H:%M}}<br>Forecast: <b>%{{y:.1f}} {unit}</b><extra></extra>",
             ), row=i, col=1)
 
         fig.update_yaxes(
-            title_text=unit,
-            row=i, col=1,
+            title_text=unit, row=i, col=1,
             showgrid=True, gridcolor=C["grid"],
             zeroline=False, linecolor=C["border"],
             color=C["text"], tickfont=dict(size=10),
@@ -717,8 +725,18 @@ def fig_weather(
         fig.update_xaxes(
             showgrid=True, gridcolor=C["grid"],
             zeroline=False, linecolor=C["border"],
-            color=C["text"],
-            row=i, col=1,
+            color=C["text"], row=i, col=1,
+        )
+
+    # Shade the 5-day forecast window on the top subplot only
+    if not fcst.empty:
+        fig.add_vrect(
+            x0=fcst["target_time"].iloc[0],
+            x1=fcst["target_time"].iloc[-1],
+            fillcolor="rgba(167,139,250,0.08)", layer="below", line_width=0,
+            annotation_text="5-day forecast", annotation_position="top left",
+            annotation_font_color=C["fcst"], annotation_font_size=11,
+            row=1, col=1,
         )
 
     fig.update_layout(
@@ -727,7 +745,7 @@ def fig_weather(
         plot_bgcolor=C["card"],
         font=dict(color=C["text"], size=12),
         margin=dict(l=10, r=10, t=48, b=10),
-        height=220 * n,
+        height=200 * n,
         hoverlabel=dict(bgcolor=C["bg"], bordercolor=C["border"]),
         legend=dict(
             orientation="h", y=1.04, x=1, xanchor="right",
@@ -735,13 +753,12 @@ def fig_weather(
             groupclick="toggleitem",
         ),
         title=dict(
-            text=f"Weather · DK1 West · last {days_back} days  "
+            text=f"Weather · DK1 West · {ctx_days}d history + 5-day forecast  "
                  f"<span style='font-size:12px;color:{C['muted']};'>"
-                 f"solid = actual · dotted = {horizon_h}h forecast</span>",
+                 f"solid = actual · dotted = forecast</span>",
             font_size=13,
         ),
     )
-    # Style subplot title annotations
     for ann in fig.layout.annotations:
         ann.font.color = C["muted"]
         ann.font.size  = 11
@@ -1031,26 +1048,21 @@ def main() -> None:
             ] if on
         ]
 
-        # Time & horizon controls
-        wc1, wc2 = st.columns(2)
-        w_days = wc1.select_slider(
-            "History window",
-            options=[7, 14, 30, 60, 90, 180],
-            value=14,
+        # History window — reuses the same issue_ts as the XGBoost forecast
+        w_days = st.select_slider(
+            "Weather history window",
+            options=[3, 5, 7, 14, 21, 30],
+            value=7,
             format_func=lambda x: f"{x} days",
             key="w_days",
         )
-        w_horizon = wc2.select_slider(
-            "Forecast horizon to compare",
-            options=[1, 6, 12, 24, 48, 72, 96, 120],
-            value=24,
-            format_func=lambda x: f"{x}h ahead",
-            key="w_horizon",
-        )
+
+        # Resolve the issue timestamp (same logic as the price forecast)
+        w_issue_ts = _resolve_issue_time(raw_preds, selected_issue) if not raw_preds.empty else pd.Timestamp(weather["issue_time"].max())
 
         if selected_weather:
             st.plotly_chart(
-                fig_weather(weather, selected_weather, w_days, w_horizon),
+                fig_weather(weather, selected_weather, w_days, w_issue_ts),
                 use_container_width=True, config={"displayModeBar": False},
             )
         else:
