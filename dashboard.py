@@ -129,13 +129,16 @@ def load_metrics() -> pd.DataFrame:
     return pd.read_csv(METRICS_FILE)
 
 
+POST_CRISIS_CUTOFF = pd.Timestamp("2023-01-01")
+
 @st.cache_data(show_spinner=False)
 def compute_forecast_bands(_raw: pd.DataFrame, eur_dkk: float) -> dict[int, float]:
-    """Return {horizon_h: sigma_dkk} from historical walk-forward residuals."""
+    """Return {horizon_h: sigma_dkk} from post-energy-crisis residuals only (>= 2023-01-01)."""
     if _raw.empty:
         return {}
     valid = _raw.dropna(subset=["predicted", "DayAheadPriceEUR"])
     valid = valid[valid["DayAheadPriceEUR"] > 0].copy()
+    valid = valid[pd.to_datetime(valid["target_time"]) >= POST_CRISIS_CUTOFF]
     if valid.empty:
         return {}
     valid["residual_eur"] = valid["predicted"] - valid["DayAheadPriceEUR"]
