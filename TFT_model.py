@@ -62,10 +62,10 @@ def load_prices() -> pd.Series:
 def build_series(prices: pd.Series) -> pd.DataFrame:
     """
     Build a single hourly time series in neuralforecast long format.
-    Weather actuals are extracted from forsoeg_dataset.parquet — each
+    Weather actuals are extracted from forecast_dataset.parquet — each
     target_time has one unique observation regardless of issue_time.
     """
-    fcst = pd.read_parquet(DATA_DIR / "forsoeg_dataset.parquet")
+    fcst = pd.read_parquet(DATA_DIR / "forecast_dataset.parquet")
     fcst = fcst[fcst["region"] == REGION]
 
     actual_cols = [

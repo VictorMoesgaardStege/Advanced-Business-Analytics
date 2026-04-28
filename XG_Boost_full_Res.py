@@ -113,7 +113,7 @@ def build_price_lags(df: pd.DataFrame, prices: pd.Series) -> pd.DataFrame:
 
 def prepare_dataset() -> pd.DataFrame:
     print("Loading forecast dataset...")
-    df = pd.read_parquet(DATA_DIR / "forsoeg_dataset.parquet")
+    df = pd.read_parquet(DATA_DIR / "forecast_dataset.parquet")
     df = df[df["region"] == REGION].copy()
     print(f"  {len(df):,} rows | region={REGION}")
 
