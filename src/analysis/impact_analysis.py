@@ -128,11 +128,7 @@ def add_household_load_split(
     Adds estimated household and non-household system load columns.
     """
 
-    if system_col not in df.columns:
-        raise ValueError(
-            f"Expected column '{system_col}' in dataframe. "
-            f"Available columns: {list(df.columns)}"
-        )
+    system_col = _resolve_system_consumption_col(df, system_col)
 
     if not 0 <= household_share <= 1:
         raise ValueError("household_share must be between 0 and 1.")
@@ -316,11 +312,29 @@ def _require_columns(df: pd.DataFrame, columns: list[str]) -> None:
         )
 
 
+def _resolve_system_consumption_col(
+    df: pd.DataFrame,
+    system_col: str = "system_consumption_mwh",
+) -> str:
+    if system_col in df.columns:
+        return system_col
+
+    legacy_col = "consumption_mwh"
+    if system_col == "system_consumption_mwh" and legacy_col in df.columns:
+        return legacy_col
+
+    raise ValueError(
+        f"Expected column '{system_col}' in dataframe. "
+        f"Available columns: {list(df.columns)}"
+    )
+
+
 def plot_system_consumption(
     df: pd.DataFrame,
     date_col: str = "date",
     system_col: str = "system_consumption_mwh",
 ) -> None:
+    system_col = _resolve_system_consumption_col(df, system_col)
     _require_columns(df, [date_col, system_col])
 
     plt.figure(figsize=(12, 5))
