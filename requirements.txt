@@ -16,3 +16,5 @@ plotly>=5.15.0
 streamlit>=1.32.0
 groq
 altair<5
+neuralforecast>=1.7.0
+prophet>=1.1.0

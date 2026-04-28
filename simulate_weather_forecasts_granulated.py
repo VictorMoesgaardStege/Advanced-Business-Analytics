@@ -8,7 +8,7 @@ Inputs
 
 Output
 ------
-  data/forsoeg_dataset.parquet           - one row per (region, issue_time, horizon_h)
+  data/forecast_dataset.parquet           - one row per (region, issue_time, horizon_h)
 
 Each row contains
 -----------------
@@ -225,7 +225,7 @@ def main():
     df = simulate_forecasts(actuals, err_params)
 
     print(f"\n[4/4] Saving dataset …")
-    out_path = DATA_DIR / "forsoeg_dataset.parquet"
+    out_path = DATA_DIR / "forecast_dataset.parquet"
     df.to_parquet(out_path, index=False)
 
     print(f"\n  Output : {out_path}")
