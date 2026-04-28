@@ -5,13 +5,13 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 
-def load_daily_system_consumption(
+def load_daily_system_consumption_df(
     n_days=60,
     csv_path=None,
 ):
     """
     Loads raw DK1 consumption data from CSV and returns the last n_days
-    as daily total system consumption [MWh/day].
+    as a pandas dataframe with daily total system consumption [MWh/day].
 
     Works for both:
     - hourly data -> aggregated to daily totals
@@ -24,9 +24,8 @@ def load_daily_system_consumption(
     df = pd.read_csv(csv_path)
 
     # ---- detect datetime column ----
-    possible_datetime_cols = [
-        "TimeDK"
-    ]
+    possible_datetime_cols = ["TimeDK"]
+
     datetime_col = None
     for col in possible_datetime_cols:
         if col in df.columns:
@@ -43,9 +42,8 @@ def load_daily_system_consumption(
     df = df.sort_values(datetime_col)
 
     # ---- detect consumption column ----
-    possible_consumption_cols = [
-        "ConsumptionkWh"
-    ]
+    possible_consumption_cols = ["ConsumptionkWh"]
+
     consumption_col = None
     for col in possible_consumption_cols:
         if col in df.columns:
@@ -63,7 +61,10 @@ def load_daily_system_consumption(
             )
 
     df = df[[datetime_col, consumption_col]].copy()
-    df = df.rename(columns={datetime_col: "datetime", consumption_col: "consumption"})
+    df = df.rename(columns={datetime_col: "datetime", consumption_col: "consumption_kwh"})
+
+    # convert kWh to MWh
+    df["consumption_mwh"] = df["consumption_kwh"] / 1000
 
     # ---- decide whether data is hourly or already daily ----
     df["date"] = df["datetime"].dt.floor("D")
@@ -71,16 +72,14 @@ def load_daily_system_consumption(
     obs_per_day = df.groupby("date").size().median()
 
     if obs_per_day > 1:
-        # hourly/sub-daily data -> sum to daily total
         daily_consumption = (
-            df.groupby("date", as_index=False)["consumption"]
+            df.groupby("date", as_index=False)["consumption_mwh"]
             .sum()
             .sort_values("date")
         )
     else:
-        # already daily data
         daily_consumption = (
-            df.groupby("date", as_index=False)["consumption"]
+            df.groupby("date", as_index=False)["consumption_mwh"]
             .first()
             .sort_values("date")
         )
@@ -90,7 +89,26 @@ def load_daily_system_consumption(
             f"Requested {n_days} days, but only found {len(daily_consumption)} daily values in {csv_path}"
         )
 
-    return daily_consumption["consumption"].tail(n_days).to_numpy()
+    daily_consumption = daily_consumption.tail(n_days).reset_index(drop=True)
+
+    return daily_consumption
+
+
+def load_daily_system_consumption(
+    n_days=60,
+    csv_path=None,
+):
+    """
+    Returns only the daily consumption values as a NumPy array.
+    Kept for backwards compatibility.
+    """
+
+    daily_df = load_daily_system_consumption_df(
+        n_days=n_days,
+        csv_path=csv_path,
+    )
+
+    return daily_df["consumption_mwh"].to_numpy()
 
 
 def make_daily_prices(n_days=60, csv_path=None):
