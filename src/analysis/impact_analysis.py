@@ -1,27 +1,37 @@
 from pathlib import Path
-from typing import Dict, Mapping, Optional
+from typing import Dict, Literal, Mapping, Optional
 
 import matplotlib.pyplot as plt
-import numpy as np
 import pandas as pd
 
 
-def load_daily_system_consumption_df(
+Frequency = Literal["hourly", "daily"]
+
+
+def load_system_consumption_df(
     n_days: int = 60,
     csv_path: Optional[Path] = None,
+    frequency: Frequency = "hourly",
 ) -> pd.DataFrame:
     """
-    Loads raw DK1 consumption data from CSV and returns the last n_days
-    as a dataframe with daily total system consumption [MWh/day].
+    Loads raw DK1 consumption data from CSV and returns system consumption
+    in MWh for the last n_days.
 
     Expected raw columns:
     - TimeDK
     - ConsumptionkWh
 
-    Works for both:
-    - hourly/sub-daily data -> aggregated to daily totals
-    - already daily data -> used directly
+    frequency:
+    - "hourly": one row per hour, with a datetime column
+    - "daily": one row per day, aggregated to daily totals
     """
+
+    if n_days <= 0:
+        raise ValueError("n_days must be positive.")
+
+    frequency = frequency.lower()
+    if frequency not in {"hourly", "daily"}:
+        raise ValueError("frequency must be either 'hourly' or 'daily'.")
 
     if csv_path is None:
         csv_path = (
@@ -35,183 +45,85 @@ def load_daily_system_consumption_df(
     if not csv_path.exists():
         raise FileNotFoundError(f"Could not find consumption file: {csv_path}")
 
-    df = pd.read_csv(csv_path)
+    raw = pd.read_csv(csv_path)
 
     possible_datetime_cols = ["TimeDK"]
-    datetime_col = next((col for col in possible_datetime_cols if col in df.columns), None)
+    datetime_col = next(
+        (col for col in possible_datetime_cols if col in raw.columns),
+        None,
+    )
 
     if datetime_col is None:
         raise ValueError(
             f"Could not find a datetime column in {csv_path}. "
-            f"Available columns: {list(df.columns)}"
+            f"Available columns: {list(raw.columns)}"
         )
 
-    df[datetime_col] = pd.to_datetime(df[datetime_col])
-    df = df.sort_values(datetime_col)
+    raw[datetime_col] = pd.to_datetime(raw[datetime_col])
+    raw = raw.sort_values(datetime_col)
 
     possible_consumption_cols = ["ConsumptionkWh"]
-    consumption_col = next((col for col in possible_consumption_cols if col in df.columns), None)
+    consumption_col = next(
+        (col for col in possible_consumption_cols if col in raw.columns),
+        None,
+    )
 
     if consumption_col is None:
-        numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+        numeric_cols = raw.select_dtypes(include=["number"]).columns.tolist()
 
         if len(numeric_cols) == 1:
             consumption_col = numeric_cols[0]
         else:
             raise ValueError(
                 f"Could not find a consumption column in {csv_path}. "
-                f"Available columns: {list(df.columns)}"
+                f"Available columns: {list(raw.columns)}"
             )
 
-    df = df[[datetime_col, consumption_col]].copy()
-    df = df.rename(
-        columns={
-            datetime_col: "datetime",
-            consumption_col: "consumption_kwh",
-        }
-    )
-
-    df["consumption_mwh"] = df["consumption_kwh"] / 1000.0
-    df["date"] = df["datetime"].dt.floor("D")
-
-    obs_per_day = df.groupby("date").size().median()
-
-    if obs_per_day > 1:
-        daily_consumption = (
-            df.groupby("date", as_index=False)["consumption_mwh"]
-            .sum()
-            .sort_values("date")
-        )
-    else:
-        daily_consumption = (
-            df.groupby("date", as_index=False)["consumption_mwh"]
-            .first()
-            .sort_values("date")
-        )
-
-    if len(daily_consumption) < n_days:
-        raise ValueError(
-            f"Requested {n_days} days, but only found "
-            f"{len(daily_consumption)} daily values in {csv_path}"
-        )
-
-    daily_consumption = daily_consumption.tail(n_days).reset_index(drop=True)
-    daily_consumption = daily_consumption.rename(
-        columns={"consumption_mwh": "system_consumption_mwh"}
-    )
-
-    return daily_consumption
-
-
-def load_daily_system_consumption(
-    n_days: int = 60,
-    csv_path: Optional[Path] = None,
-) -> np.ndarray:
-    """
-    Backwards-compatible wrapper returning only daily consumption values.
-    """
-
-    daily_df = load_daily_system_consumption_df(
-        n_days=n_days,
-        csv_path=csv_path,
-    )
-
-    return daily_df["system_consumption_mwh"].to_numpy()
-
-
-def load_hourly_system_consumption_df(
-    n_days: int = 60,
-    csv_path: Optional[Path] = None,
-) -> pd.DataFrame:
-    """
-    Loads raw DK1 consumption data from CSV and returns hourly system
-    consumption for the last n_days.
-
-    Expected raw columns:
-    - TimeDK
-    - ConsumptionkWh
-    """
-
-    if csv_path is None:
-        csv_path = (
-            Path(__file__).resolve().parents[2]
-            / "data"
-            / "consumption_dk1_raw.csv"
-        )
-
-    csv_path = Path(csv_path)
-
-    if not csv_path.exists():
-        raise FileNotFoundError(f"Could not find consumption file: {csv_path}")
-
-    df = pd.read_csv(csv_path)
-
-    possible_datetime_cols = ["TimeDK"]
-    datetime_col = next((col for col in possible_datetime_cols if col in df.columns), None)
-
-    if datetime_col is None:
-        raise ValueError(
-            f"Could not find a datetime column in {csv_path}. "
-            f"Available columns: {list(df.columns)}"
-        )
-
-    df[datetime_col] = pd.to_datetime(df[datetime_col])
-    df = df.sort_values(datetime_col)
-
-    possible_consumption_cols = ["ConsumptionkWh"]
-    consumption_col = next((col for col in possible_consumption_cols if col in df.columns), None)
-
-    if consumption_col is None:
-        numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-
-        if len(numeric_cols) == 1:
-            consumption_col = numeric_cols[0]
-        else:
-            raise ValueError(
-                f"Could not find a consumption column in {csv_path}. "
-                f"Available columns: {list(df.columns)}"
-            )
-
-    hourly_consumption = (
-        df[[datetime_col, consumption_col]]
+    df = (
+        raw[[datetime_col, consumption_col]]
         .rename(
             columns={
                 datetime_col: "datetime",
                 consumption_col: "consumption_kwh",
             }
         )
-        .assign(
-            datetime=lambda data: data["datetime"].dt.floor("h"),
-            system_consumption_mwh=lambda data: data["consumption_kwh"] / 1000.0,
+        .assign(system_consumption_mwh=lambda data: data["consumption_kwh"] / 1000.0)
+    )
+
+    if frequency == "hourly":
+        out = (
+            df.assign(datetime=lambda data: data["datetime"].dt.floor("h"))
+            .groupby("datetime", as_index=False)["system_consumption_mwh"]
+            .sum()
+            .sort_values("datetime")
         )
-        .groupby("datetime", as_index=False)["system_consumption_mwh"]
-        .sum()
-        .sort_values("datetime")
-    )
-    hourly_consumption["date"] = hourly_consumption["datetime"].dt.floor("D")
+        out["date"] = out["datetime"].dt.floor("D")
+        cutoff = out["datetime"].max() - pd.Timedelta(days=n_days)
+        return out[out["datetime"] > cutoff].reset_index(drop=True)
 
-    cutoff = hourly_consumption["datetime"].max() - pd.Timedelta(days=n_days)
-    hourly_consumption = hourly_consumption[
-        hourly_consumption["datetime"] > cutoff
-    ].reset_index(drop=True)
+    df["date"] = df["datetime"].dt.floor("D")
+    obs_per_day = df.groupby("date").size().median()
 
-    return hourly_consumption
+    if obs_per_day > 1:
+        out = (
+            df.groupby("date", as_index=False)["system_consumption_mwh"]
+            .sum()
+            .sort_values("date")
+        )
+    else:
+        out = (
+            df.groupby("date", as_index=False)["system_consumption_mwh"]
+            .first()
+            .sort_values("date")
+        )
 
+    if len(out) < n_days:
+        raise ValueError(
+            f"Requested {n_days} days, but only found "
+            f"{len(out)} daily values in {csv_path}"
+        )
 
-def load_hourly_system_consumption(
-    n_days: int = 60,
-    csv_path: Optional[Path] = None,
-) -> np.ndarray:
-    """
-    Backwards-compatible wrapper returning only hourly consumption values.
-    """
-
-    hourly_df = load_hourly_system_consumption_df(
-        n_days=n_days,
-        csv_path=csv_path,
-    )
-
-    return hourly_df["system_consumption_mwh"].to_numpy()
+    return out.tail(n_days).reset_index(drop=True)
 
 
 def add_household_load_split(
@@ -223,7 +135,7 @@ def add_household_load_split(
     Adds estimated household and non-household system load columns.
     """
 
-    system_col = _resolve_system_consumption_col(df, system_col)
+    _require_columns(df, [system_col])
 
     if not 0 <= household_share <= 1:
         raise ValueError("household_share must be between 0 and 1.")
@@ -407,23 +319,6 @@ def _require_columns(df: pd.DataFrame, columns: list[str]) -> None:
         )
 
 
-def _resolve_system_consumption_col(
-    df: pd.DataFrame,
-    system_col: str = "system_consumption_mwh",
-) -> str:
-    if system_col in df.columns:
-        return system_col
-
-    legacy_col = "consumption_mwh"
-    if system_col == "system_consumption_mwh" and legacy_col in df.columns:
-        return legacy_col
-
-    raise ValueError(
-        f"Expected column '{system_col}' in dataframe. "
-        f"Available columns: {list(df.columns)}"
-    )
-
-
 def _resolve_time_col(df: pd.DataFrame, date_col: str = "date") -> str:
     if (
         date_col == "date"
@@ -449,7 +344,6 @@ def plot_system_consumption(
     system_col: str = "system_consumption_mwh",
 ) -> None:
     date_col = _resolve_time_col(df, date_col)
-    system_col = _resolve_system_consumption_col(df, system_col)
     xlabel, ylabel = _time_axis_labels(date_col)
     _require_columns(df, [date_col, system_col])
 
