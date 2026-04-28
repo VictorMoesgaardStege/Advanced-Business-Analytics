@@ -119,6 +119,101 @@ def load_daily_system_consumption(
     return daily_df["system_consumption_mwh"].to_numpy()
 
 
+def load_hourly_system_consumption_df(
+    n_days: int = 60,
+    csv_path: Optional[Path] = None,
+) -> pd.DataFrame:
+    """
+    Loads raw DK1 consumption data from CSV and returns hourly system
+    consumption for the last n_days.
+
+    Expected raw columns:
+    - TimeDK
+    - ConsumptionkWh
+    """
+
+    if csv_path is None:
+        csv_path = (
+            Path(__file__).resolve().parents[2]
+            / "data"
+            / "consumption_dk1_raw.csv"
+        )
+
+    csv_path = Path(csv_path)
+
+    if not csv_path.exists():
+        raise FileNotFoundError(f"Could not find consumption file: {csv_path}")
+
+    df = pd.read_csv(csv_path)
+
+    possible_datetime_cols = ["TimeDK"]
+    datetime_col = next((col for col in possible_datetime_cols if col in df.columns), None)
+
+    if datetime_col is None:
+        raise ValueError(
+            f"Could not find a datetime column in {csv_path}. "
+            f"Available columns: {list(df.columns)}"
+        )
+
+    df[datetime_col] = pd.to_datetime(df[datetime_col])
+    df = df.sort_values(datetime_col)
+
+    possible_consumption_cols = ["ConsumptionkWh"]
+    consumption_col = next((col for col in possible_consumption_cols if col in df.columns), None)
+
+    if consumption_col is None:
+        numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+
+        if len(numeric_cols) == 1:
+            consumption_col = numeric_cols[0]
+        else:
+            raise ValueError(
+                f"Could not find a consumption column in {csv_path}. "
+                f"Available columns: {list(df.columns)}"
+            )
+
+    hourly_consumption = (
+        df[[datetime_col, consumption_col]]
+        .rename(
+            columns={
+                datetime_col: "datetime",
+                consumption_col: "consumption_kwh",
+            }
+        )
+        .assign(
+            datetime=lambda data: data["datetime"].dt.floor("h"),
+            system_consumption_mwh=lambda data: data["consumption_kwh"] / 1000.0,
+        )
+        .groupby("datetime", as_index=False)["system_consumption_mwh"]
+        .sum()
+        .sort_values("datetime")
+    )
+    hourly_consumption["date"] = hourly_consumption["datetime"].dt.floor("D")
+
+    cutoff = hourly_consumption["datetime"].max() - pd.Timedelta(days=n_days)
+    hourly_consumption = hourly_consumption[
+        hourly_consumption["datetime"] > cutoff
+    ].reset_index(drop=True)
+
+    return hourly_consumption
+
+
+def load_hourly_system_consumption(
+    n_days: int = 60,
+    csv_path: Optional[Path] = None,
+) -> np.ndarray:
+    """
+    Backwards-compatible wrapper returning only hourly consumption values.
+    """
+
+    hourly_df = load_hourly_system_consumption_df(
+        n_days=n_days,
+        csv_path=csv_path,
+    )
+
+    return hourly_df["system_consumption_mwh"].to_numpy()
+
+
 def add_household_load_split(
     df: pd.DataFrame,
     household_share: float = 0.32,
@@ -329,19 +424,40 @@ def _resolve_system_consumption_col(
     )
 
 
+def _resolve_time_col(df: pd.DataFrame, date_col: str = "date") -> str:
+    if (
+        date_col == "date"
+        and "datetime" in df.columns
+        and "date" in df.columns
+        and df["datetime"].nunique() > df["date"].nunique()
+    ):
+        return "datetime"
+
+    return date_col
+
+
+def _time_axis_labels(date_col: str) -> tuple[str, str]:
+    if date_col == "datetime":
+        return "Time", "Consumption (MWh/hour)"
+
+    return "Date", "Consumption (MWh/day)"
+
+
 def plot_system_consumption(
     df: pd.DataFrame,
     date_col: str = "date",
     system_col: str = "system_consumption_mwh",
 ) -> None:
+    date_col = _resolve_time_col(df, date_col)
     system_col = _resolve_system_consumption_col(df, system_col)
+    xlabel, ylabel = _time_axis_labels(date_col)
     _require_columns(df, [date_col, system_col])
 
     plt.figure(figsize=(12, 5))
     plt.plot(df[date_col], df[system_col])
     plt.title("Total DK1 Electricity Consumption")
-    plt.xlabel("Date")
-    plt.ylabel("Consumption (MWh/day)")
+    plt.xlabel(xlabel)
+    plt.ylabel(ylabel)
     plt.xticks(rotation=45)
     plt.tight_layout()
     plt.show()
@@ -351,6 +467,8 @@ def plot_household_split(
     df: pd.DataFrame,
     date_col: str = "date",
 ) -> None:
+    date_col = _resolve_time_col(df, date_col)
+    xlabel, ylabel = _time_axis_labels(date_col)
     _require_columns(
         df,
         [
@@ -366,8 +484,8 @@ def plot_household_split(
     plt.plot(df[date_col], df["household_load_mwh"], label="Estimated household load")
     plt.plot(df[date_col], df["other_system_load_mwh"], label="Other system load")
     plt.title("Estimated Household Share of DK1 Consumption")
-    plt.xlabel("Date")
-    plt.ylabel("Consumption (MWh/day)")
+    plt.xlabel(xlabel)
+    plt.ylabel(ylabel)
     plt.legend()
     plt.xticks(rotation=45)
     plt.tight_layout()
@@ -378,6 +496,8 @@ def plot_flexible_vs_inflexible(
     df: pd.DataFrame,
     date_col: str = "date",
 ) -> None:
+    date_col = _resolve_time_col(df, date_col)
+    xlabel, ylabel = _time_axis_labels(date_col)
     _require_columns(
         df,
         [
@@ -401,8 +521,8 @@ def plot_flexible_vs_inflexible(
         label="Flexible household load",
     )
     plt.title("Flexible vs. Inflexible Household Consumption")
-    plt.xlabel("Date")
-    plt.ylabel("Consumption (MWh/day)")
+    plt.xlabel(xlabel)
+    plt.ylabel(ylabel)
     plt.legend()
     plt.xticks(rotation=45)
     plt.tight_layout()
@@ -432,6 +552,8 @@ def plot_segment_loads(
     segment_assumptions: Mapping[str, Mapping[str, float]],
     date_col: str = "date",
 ) -> None:
+    date_col = _resolve_time_col(df, date_col)
+    xlabel, ylabel = _time_axis_labels(date_col)
     baseline_cols = [
         f"{segment}_baseline_mwh"
         for segment in segment_assumptions.keys()
@@ -446,8 +568,8 @@ def plot_segment_loads(
         plt.plot(df[date_col], df[col], label=segment)
 
     plt.title("Estimated Flexible Household Load Segments")
-    plt.xlabel("Date")
-    plt.ylabel("Consumption (MWh/day)")
+    plt.xlabel(xlabel)
+    plt.ylabel(ylabel)
     plt.legend()
     plt.xticks(rotation=45)
     plt.tight_layout()
@@ -458,6 +580,8 @@ def plot_shiftable_energy(
     df: pd.DataFrame,
     date_col: str = "date",
 ) -> None:
+    date_col = _resolve_time_col(df, date_col)
+    xlabel, ylabel = _time_axis_labels(date_col)
     _require_columns(
         df,
         [
@@ -481,8 +605,8 @@ def plot_shiftable_energy(
         label="Actually shiftable energy",
     )
     plt.title("From Household Load to Shiftable Energy")
-    plt.xlabel("Date")
-    plt.ylabel("Consumption (MWh/day)")
+    plt.xlabel(xlabel)
+    plt.ylabel(ylabel)
     plt.legend()
     plt.xticks(rotation=45)
     plt.tight_layout()
