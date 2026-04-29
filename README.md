@@ -5,26 +5,25 @@ This repository contains the final project for the Advanced Business Analytics c
 
 We design and evaluate a data-driven forecasting and decision-support system that:
 
-- **Forecasts electricity prices** up to 7 days ahead for the DK1 price area.
-- **Communicates uncertainty** in price predictions via probabilistic quantile forecasts.
+- **Forecasts electricity prices** up to 120 hours ahead for the DK1 price area.
+- **Communicates uncertainty** in price predictions leveraging residual variance from the developed model training
 - **Generates consumer-friendly recommendations** such as:
-  - *"If you can wait 3 days, electricity prices are likely to drop significantly."*
-  - *"The next 12 hours are expected to be unusually expensive."*
+  - *"If you can wait 3 days to charge your EV, the electricity prices are likely to drop significantly"*
+  - *"The next 48 hours are expected to be unusually expensive. It is recommended to preload by doing laundry, etc. sooner rather than later"*
 
-By translating raw price forecasts into interpretable guidance, the system helps consumers make better timing decisions while indirectly balancing demand across the grid.
+By translating raw price forecasts into recommendations, the system helps consumers make better consumption decisions, indirectly balancing supply and demand and hopefully reducing the amount of hours the grid experiences high stress loads.
 
 ## Repository Structure
 
 ```
 Advanced-Business-Analytics/
-├── main.py                        # Pipeline entry point (CLI)
+├── project_handin.ipynb           # Technical report. Contains markdown and compressed code blocks drawing on multiple python files. It is technical but self-explanatory. It is divided into project relevant sections. It has an introduction and a conclusion. 
 ├── requirements.txt               # Python dependencies
-├── data/                          # Local data cache (CSV files, git-ignored)
-├── models/                        # Trained model artefacts (git-ignored)
+├── data/                          # Local data cache (CSV files, parquet, etc. Some git-ignored)
 ├── src/
 │   ├── data/
 │   │   └── fetch_consumption_data.py          # Data acquisition (Energi Data Service API / CSV)
-│   ├── features/
+│   ├── analysis/
 │   │   └── feature_engineering.py # Feature matrix construction
 │   ├── models/
 │   │   └── forecasting.py         # LightGBM quantile forecasting models
