@@ -26,9 +26,9 @@ WEATHER_VARS = {
 }
 
 C = {
-    "bg":          "#ffffff",
-    "card":        "#f8fafc",
-    "border":      "#e2e8f0",
+    "bg":          "#f1f5f9",
+    "card":        "#e8edf2",
+    "border":      "#cbd5e1",
     "text":        "#0f172a",
     "muted":       "#64748b",
     "accent":      "#0284c7",
