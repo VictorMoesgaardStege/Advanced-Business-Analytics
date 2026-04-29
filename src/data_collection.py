@@ -25,7 +25,7 @@ from pathlib import Path
 
 import pandas as pd
 
-sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 DATA_DIR = Path("data")
 DATA_DIR.mkdir(exist_ok=True)
