@@ -17,9 +17,11 @@ By translating raw price forecasts into recommendations, the system helps consum
 
 ```
 Advanced-Business-Analytics/
-├── project_handin.ipynb           # Technical report. Contains markdown and compressed code blocks drawing on multiple python files. It is technical but self-explanatory. It is divided into project relevant sections. It has an introduction and a conclusion. 
+├── .claude/
+├── .devcontainer/
+├── .streamlit/
 ├── requirements.txt               # Python dependencies
-├── data/                          # Local data cache (CSV files, parquet, etc. Some git-ignored)
+├── data/                          # Local data (CSV files, parquet, etc. Some git-ignored)
 ├── src/
 │   ├── data/
 │   │   ├──fetch_consumption_data.py          # Data acquisition (API / CSV)
@@ -27,20 +29,18 @@ Advanced-Business-Analytics/
 │   │   ├── fetch_day_ahead_price_data.py          # Data acquisition (API / CSV)
 │   │   ├── fetch_weather_actuals_data.py          # Data acquisition (API / CSV)
 │   │   ├── fetch_weather_forecast_data.py          # Data acquisition (API / CSV)
-│   ├── analysis/
-│   │   └── feature_engineering.py # Feature matrix construction
-│   ├── models/
-│   │   └── forecasting.py         # LightGBM quantile forecasting models
-│   ├── evaluation/
-│   │   └── metrics.py             # MAE, RMSE, MAPE, pinball loss, interval coverage
-│   └── recommendations/
-│       └── decision_support.py    # Consumer recommendation engine
-└── tests/
-    ├── conftest.py
-    ├── test_feature_engineering.py
-    ├── test_forecasting.py
-    ├── test_metrics.py
-    └── test_decision_support.py
+│   │
+│   ├── analysis/ # This folder contains the scripts with all necessary functions for the project_handin.ipynb
+│   │   ├── energy_congestion_analysis.py     # Looks at grid stress using consumption data
+│   │   ├── forecast_analysis.py              # Looks at forecast energy price predictions
+│   │   ├── impact_analysis.py                # Looks at the impact of recommendations via. simulation results
+│   │
+├── gitignore
+├── project_handin.ipynb           # Technical report. Contains markdown and compressed code blocks drawing on multiple python files. It is technical but self-explanatory. It is divided into project relevant sections. It has an introduction and a conclusion. 
+├── gitignore
+├── gitignore
+├── gitignore
+├── gitignore
 ```
 
 ## Approach
