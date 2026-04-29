@@ -89,7 +89,18 @@ Models are evaluated on a held-out 15 % test split using:
 pip install -r requirements.txt
 ```
 
+
+###
+python3 -m pip install -r requirements.txt
+python3 -m pip install lime
+python3 src/data/data_processing.py
+python3 src/models/XG_Boost_full_Res.py
+python3 src/analysis/explainable_ai.py
+
 ### 2. Run the project projecthandin.ipynb
+
+
+
 
 
 ## Impact
