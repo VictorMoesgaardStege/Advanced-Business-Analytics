@@ -1,6 +1,0 @@
-Concept,Operational definition,Interpretation
-Low-load hour,Hourly DK1 system load at or below the historical 5th percentile (1694.4 MWh).,"Low thermal stress and high unused capacity. With consumption data alone this is an under-utilisation signal, not physical damage."
-Peak hour,Hourly DK1 system load at or above the historical 95th percentile (3269.7 MWh).,The grid is operating close to the top of its observed range and should be monitored for recurring stress.
-Overloaded hour,"Hourly DK1 system load above the historical capacity proxy, defined as the 99th percentile of observed load (3568.3 MWh).",This is treated as the point where observed loading moves beyond normal historical operation and maintenance pressure starts accelerating.
-Maintenance pressure,"Hourly proxy = load_ratio^2 + 25 * max(load_ratio - 1, 0)^2 + 0.5 * ramp_ratio, aggregated over time.","Normal loading creates baseline wear, but overload and strong hour-to-hour ramps increase pressure nonlinearly."
-Maintenance attention trigger,A 30-day rolling maintenance pressure above 497 or a visible cluster of overloaded hours.,A practical flag for inspection planning or local reinforcement studies.
