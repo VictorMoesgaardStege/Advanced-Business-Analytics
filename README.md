@@ -22,7 +22,11 @@ Advanced-Business-Analytics/
 ├── data/                          # Local data cache (CSV files, parquet, etc. Some git-ignored)
 ├── src/
 │   ├── data/
-│   │   └── fetch_consumption_data.py          # Data acquisition (Energi Data Service API / CSV)
+│   │   ├──fetch_consumption_data.py          # Data acquisition (API / CSV)
+│   │   ├── fetch_consumption_data.py          # Data acquisition (API / CSV)
+│   │   ├── fetch_day_ahead_price_data.py          # Data acquisition (API / CSV)
+│   │   ├── fetch_weather_actuals_data.py          # Data acquisition (API / CSV)
+│   │   ├── fetch_weather_forecast_data.py          # Data acquisition (API / CSV)
 │   ├── analysis/
 │   │   └── feature_engineering.py # Feature matrix construction
 │   ├── models/
