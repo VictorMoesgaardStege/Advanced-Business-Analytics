@@ -11,7 +11,6 @@ Quick start
         fetch_weather_actuals,
         fetch_weather_forecasts,
         fetch_consumption,
-        fetch_supply,
         fetch_day_ahead_prices,
         build_forecast_dataset,
         fetch_all,
@@ -140,44 +139,6 @@ def fetch_consumption(
         df["TimeDK"] = pd.to_datetime(df["TimeDK"], errors="coerce")
     return df
 
-
-# ── Supply forecasts ───────────────────────────────────────────────────────────
-
-def fetch_supply(
-    start: str,
-    end: str,
-    price_area: str = "DK1",
-    csv_path: str | Path | None = None,
-) -> pd.DataFrame:
-    """Fetch hourly wind/solar supply forecasts from Energi Data Service.
-
-    Parameters
-    ----------
-    start      : str  e.g. "2021-01-01"
-    end        : str  e.g. "2026-04-28"
-    price_area : "DK1" or "DK2"
-    csv_path   : output path (default: data/supply_forecasts_<price_area>_raw.csv)
-
-    Returns
-    -------
-    pd.DataFrame  with ForecastDayAhead, ForecastIntraday, Forecast5Hour, etc.
-    """
-    from src.data.fetch_supply_forecast_data import fetch_records, write_csv
-
-    if csv_path is None:
-        csv_path = DATA_DIR / f"supply_forecasts_{price_area.lower()}_raw.csv"
-    csv_path = Path(csv_path)
-
-    print(f"[fetch_supply] {start} → {end}  area={price_area}")
-    records = fetch_records(start=start, end=end, price_area=[price_area])
-    write_csv(records, csv_path)
-    print(f"  {len(records):,} rows saved → {csv_path}")
-
-    df = pd.DataFrame(records)
-    for col in ("HourUTC", "HourDK"):
-        if col in df.columns:
-            df[col] = pd.to_datetime(df[col], errors="coerce")
-    return df
 
 
 # ── Day-ahead prices ───────────────────────────────────────────────────────────
@@ -521,12 +482,11 @@ def build_forecast_dataset(
 def fetch_all(start: str, end: str, price_area: str = "DK1") -> dict[str, pd.DataFrame]:
     """Fetch all raw data sources for the given date range.
 
-    Runs the five fetch functions in order:
+    Runs the four fetch functions in order:
       1. weather actuals
       2. weather forecasts
       3. consumption
-      4. supply forecasts
-      5. day-ahead prices
+      4. day-ahead prices
 
     Parameters
     ----------
@@ -536,8 +496,7 @@ def fetch_all(start: str, end: str, price_area: str = "DK1") -> dict[str, pd.Dat
 
     Returns
     -------
-    dict with keys: "weather_actuals", "weather_forecasts", "consumption",
-                    "supply", "prices"
+    dict with keys: "weather_actuals", "weather_forecasts", "consumption", "prices"
     """
     print("=" * 60)
     print(f"fetch_all  {start} → {end}  (area={price_area})")
@@ -547,7 +506,6 @@ def fetch_all(start: str, end: str, price_area: str = "DK1") -> dict[str, pd.Dat
     results["weather_actuals"]   = fetch_weather_actuals(start, end)
     results["weather_forecasts"] = fetch_weather_forecasts(start, end)
     results["consumption"]       = fetch_consumption(start, end, price_area=price_area)
-    results["supply"]            = fetch_supply(start, end, price_area=price_area)
     results["prices"]            = fetch_day_ahead_prices(start, end, price_area=price_area)
 
     print("\n" + "=" * 60)
