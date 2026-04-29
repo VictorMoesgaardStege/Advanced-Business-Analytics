@@ -26,7 +26,9 @@ Advanced-Business-Analytics/
 │   │   ├── energy_congestion_analysis.py  # Analyzes grid stress using electricity consumption data
 │   │   ├── forecast_analysis.py           # Evaluates electricity price forecast performance
 │   │   └── impact_analysis.py             # Assesses recommendation impact using simulation results
-│   ├── data/                      # Data acquisition scripts
+│   ├── data/                      # Data acquisition scripts and processing
+│   │   ├── data_collection.py             # Collects all API fetching for all raw data sources
+│   │   ├── data_processing.py             # Builds dataset for XG boost modelling
 │   │   ├── fetch_consumption_data.py      # Fetches electricity consumption data
 │   │   ├── fetch_day_ahead_price_data.py  # Fetches day-ahead electricity price data
 │   │   ├── fetch_weather_actuals_data.py  # Fetches historical weather observations
