@@ -17,30 +17,27 @@ By translating raw price forecasts into recommendations, the system helps consum
 
 ```
 Advanced-Business-Analytics/
-├── .claude/
-├── .devcontainer/
-├── .streamlit/
-├── requirements.txt               # Python dependencies
-├── data/                          # Local data (CSV files, parquet, etc. Some git-ignored)
+├── .claude/                       # Claude configuration files
+├── .devcontainer/                 # Development container configuration
+├── .streamlit/                    # Streamlit app configuration
+├── data/                          # Local datasets (CSV, Parquet, etc.; some files are git-ignored)
 ├── src/
-│   ├── data/
-│   │   ├──fetch_consumption_data.py          # Data acquisition (API / CSV)
-│   │   ├── fetch_consumption_data.py          # Data acquisition (API / CSV)
-│   │   ├── fetch_day_ahead_price_data.py          # Data acquisition (API / CSV)
-│   │   ├── fetch_weather_actuals_data.py          # Data acquisition (API / CSV)
-│   │   ├── fetch_weather_forecast_data.py          # Data acquisition (API / CSV)
-│   │
-│   ├── analysis/ # This folder contains the scripts with all necessary functions for the project_handin.ipynb
-│   │   ├── energy_congestion_analysis.py     # Looks at grid stress using consumption data
-│   │   ├── forecast_analysis.py              # Looks at forecast energy price predictions
-│   │   ├── impact_analysis.py                # Looks at the impact of recommendations via. simulation results
-│   │
-├── gitignore
-├── project_handin.ipynb           # Technical report. Contains markdown and compressed code blocks drawing on multiple python files. It is technical but self-explanatory. It is divided into project relevant sections. It has an introduction and a conclusion. 
-├── gitignore
-├── gitignore
-├── gitignore
-├── gitignore
+│   ├── analysis/                  # Analysis scripts used by project_handin.ipynb
+│   │   ├── energy_congestion_analysis.py  # Analyzes grid stress using electricity consumption data
+│   │   ├── forecast_analysis.py           # Evaluates electricity price forecast performance
+│   │   └── impact_analysis.py             # Assesses recommendation impact using simulation results
+│   ├── data/                      # Data acquisition scripts
+│   │   ├── fetch_consumption_data.py      # Fetches electricity consumption data
+│   │   ├── fetch_day_ahead_price_data.py  # Fetches day-ahead electricity price data
+│   │   ├── fetch_weather_actuals_data.py  # Fetches historical weather observations
+│   │   └── fetch_weather_forecast_data.py # Fetches weather forecast data
+│   └── models/                    # Forecasting and simulation models
+│       ├── forecast_model.py      # Builds XGBoost forecasts and uncertainty estimates
+│       └── simulation_model.py    # Runs heuristic simulations of recommendation impact
+├── .gitignore                     # Files and folders excluded from version control
+├── dashboard.py                   # Streamlit dashboard for price forecasting and recommendations
+├── project_handin.ipynb           # Main technical report with narrative, analysis, and code outputs
+└── requirements.txt               # Python dependencies
 ```
 
 ## Approach
