@@ -105,9 +105,9 @@ def load_prices() -> pd.DataFrame:
     if "DayAheadPriceDKK" not in df.columns:
         return pd.DataFrame()
 
-    df["PriceDKK"] = pd.to_numeric(df["DayAheadPriceDKK"], errors="coerce")
+    df["PriceDKK"] = pd.to_numeric(df["DayAheadPriceDKK"], errors="coerce") / 1000
     if "DayAheadPriceEUR" in df.columns:
-        df["PriceEUR"] = pd.to_numeric(df["DayAheadPriceEUR"], errors="coerce")
+        df["PriceEUR"] = pd.to_numeric(df["DayAheadPriceEUR"], errors="coerce") / 1000
 
     df = df.dropna(subset=["_ts", "PriceDKK"]).sort_values("_ts").reset_index(drop=True)
     df["Date"] = df["_ts"].dt.normalize()
@@ -143,7 +143,7 @@ def compute_forecast_bands(_raw: pd.DataFrame, eur_dkk: float) -> dict[int, floa
         return {}
     valid["residual_eur"] = valid["predicted"] - valid["DayAheadPriceEUR"]
     sigma = valid.groupby("horizon_h")["residual_eur"].std() * eur_dkk
-    return sigma.to_dict()
+    return (sigma / 1000).to_dict()
 
 
 @st.cache_data(show_spinner=False)
@@ -228,8 +228,8 @@ def process_predictions(
         .rename(columns={"target_date": "Date"})
         .head(5)
     )
-    daily["pred_dkk"]   = daily["pred_eur"]   * eur_dkk
-    daily["actual_dkk"] = daily["actual_eur"] * eur_dkk
+    daily["pred_dkk"]   = daily["pred_eur"]   * eur_dkk / 1000
+    daily["actual_dkk"] = daily["actual_eur"] * eur_dkk / 1000
     daily["issue_date"] = issue_date
     return daily
 
@@ -248,8 +248,8 @@ def process_predictions_hourly(
     sub      = raw[raw["issue_time"] == issue_ts].copy()
 
     future = sub[sub["target_time"] > issue_ts].sort_values("target_time").head(120)
-    future["pred_dkk"]   = future["predicted"]        * eur_dkk
-    future["actual_dkk"] = future["DayAheadPriceEUR"] * eur_dkk
+    future["pred_dkk"]   = future["predicted"]        * eur_dkk / 1000
+    future["actual_dkk"] = future["DayAheadPriceEUR"] * eur_dkk / 1000
     future["issue_date"] = issue_ts.normalize()
     future["sigma_dkk"]  = future["horizon_h"].map(bands or {}).fillna(0.0)
     return future[["target_time", "horizon_h", "pred_dkk", "actual_dkk", "issue_date",
@@ -303,9 +303,9 @@ def _build_hourly_day_summary(hourly_fcst: pd.DataFrame) -> str:
         avg        = grp["pred_dkk"].mean()
         lines.append(
             f"  {pd.Timestamp(date).strftime('%a %d %b')}:  "
-            f"avg {avg:.0f}  |  peak {peak_row['pred_dkk']:.0f} @ {peak_row['target_time'].strftime('%H:%M')}  "
-            f"|  cheapest {cheap_row['pred_dkk']:.0f} @ {cheap_row['target_time'].strftime('%H:%M')}  "
-            f"  (all DKK/MWh)"
+            f"avg {avg:.3f}  |  peak {peak_row['pred_dkk']:.3f} @ {peak_row['target_time'].strftime('%H:%M')}  "
+            f"|  cheapest {cheap_row['pred_dkk']:.3f} @ {cheap_row['target_time'].strftime('%H:%M')}  "
+            f"  (all DKK/kWh)"
         )
     return "\n".join(lines)
 
@@ -346,7 +346,7 @@ def prompt_reasoning(
     weather: pd.DataFrame,
 ) -> str:
     daily_rows = "\n".join(
-        f"  {r.Date.strftime('%a %d %b')}: {r.pred_dkk:.0f} DKK/MWh  ({r.pred_dkk - today_avg:+.0f} vs today)"
+        f"  {r.Date.strftime('%a %d %b')}: {r.pred_dkk:.3f} DKK/kWh  ({r.pred_dkk - today_avg:+.3f} vs today)"
         for _, r in fcst.iterrows()
     )
     intraday    = _build_hourly_day_summary(hourly_fcst)
@@ -354,7 +354,7 @@ def prompt_reasoning(
 
     return f"""You are a Nordic electricity market analyst. Be direct and concise.
 
-DK1 forecast issued {issue_date.strftime('%d %b %Y')} — today avg: {today_avg:.0f} DKK/MWh
+DK1 forecast issued {issue_date.strftime('%d %b %Y')} — today avg: {today_avg:.3f} DKK/kWh
 
 PRICES (daily avg, peak, cheapest):
 {intraday}
@@ -366,7 +366,7 @@ Write EXACTLY 4 bullet points (•), each 50–70 words. Each bullet covers one 
 
 Write like a Nordic energy market analyst giving a verbal briefing — analytical, not descriptive. Do NOT list weather numbers sentence by sentence. Instead, use weather and price data as evidence to support a broader market argument, for example:
 - "Prices are forecast to rise sharply mid-week as wind drops below 3 m/s, removing the primary source of low-cost generation and forcing the market to rely on expensive thermal capacity."
-- "The sub-zero temperatures on [day] will amplify heat-pump demand across Scandinavia, tightening the supply-demand balance at peak hours and pushing the 18:00 price to [X] DKK/MWh."
+- "The sub-zero temperatures on [day] will amplify heat-pump demand across Scandinavia, tightening the supply-demand balance at peak hours and pushing the 18:00 price to [X] DKK/kWh."
 
 Rules:
 - Reference specific numbers only where they make the argument stronger, not in every sentence.
@@ -395,7 +395,7 @@ def _build_cheap_windows(hourly_fcst: pd.DataFrame, n: int = 3) -> str:
         )
         lines.append(
             f"  {pd.Timestamp(date).strftime('%A %d %b')}: cheapest {time_of_day} "
-            f"around {h_from:02d}:00–{h_to:02d}:00, avg {avg_p:.0f} DKK/MWh"
+            f"around {h_from:02d}:00–{h_to:02d}:00, avg {avg_p:.3f} DKK/kWh"
         )
         if len(lines) >= n:
             break
@@ -408,7 +408,7 @@ def prompt_household(
     hourly_fcst: pd.DataFrame,
 ) -> str:
     daily_rows = "\n".join(
-        f"  {r.Date.strftime('%A %d %b')}: {r.pred_dkk:.0f} DKK/MWh avg  "
+        f"  {r.Date.strftime('%A %d %b')}: {r.pred_dkk:.3f} DKK/kWh avg  "
         f"({'↑ expensive' if r.pred_dkk - today_avg > 50 else '↓ cheap' if r.pred_dkk - today_avg < -50 else '→ similar to today'})"
         for _, r in fcst.iterrows()
     )
@@ -417,7 +417,7 @@ def prompt_household(
 
     return f"""You are a friendly energy advisor helping a Danish household reduce their electricity bill.
 
-DK1 spot price forecast — today's average: {today_avg:.0f} DKK/MWh
+DK1 spot price forecast — today's average: {today_avg:.3f} DKK/kWh
 
 DAILY OUTLOOK:
 {daily_rows}
@@ -460,7 +460,7 @@ def fig_today(hourly: pd.DataFrame, date: pd.Timestamp) -> go.Figure:
         line=dict(color=C["price"], width=3, shape="spline", smoothing=0.7),
         marker=dict(size=6, color=C["price"]),
         fill="tozeroy", fillcolor=C["price_fill"],
-        hovertemplate="<b>%{x}:00</b><br>%{y:.0f} DKK/MWh<extra></extra>",
+        hovertemplate="<b>%{x}:00</b><br>%{y:.3f} DKK/kWh<extra></extra>",
     ))
     if not hourly.empty:
         peak  = hourly.loc[hourly["PriceDKK"].idxmax()]
@@ -476,7 +476,7 @@ def fig_today(hourly: pd.DataFrame, date: pd.Timestamp) -> go.Figure:
         "height": 320, "showlegend": False,
         "title": dict(text=f"Hourly spot price · {date.strftime('%d %b %Y')}", font_size=13),
         "xaxis": dict(**_BASE["xaxis"], dtick=3, ticksuffix=":00", range=[-0.5, 23.5]),
-        "yaxis_title": "DKK/MWh",
+        "yaxis_title": "DKK/kWh",
     })
     return fig
 
@@ -488,7 +488,7 @@ def fig_history(hist: pd.DataFrame, days_back: int) -> go.Figure:
         x=df["Date"], y=df["AvgDKK"],
         mode="lines", line=dict(color=C["price"], width=2.5),
         fill="tozeroy", fillcolor=C["price_fill"],
-        hovertemplate="%{x|%d %b %Y}<br><b>%{y:.0f} DKK/MWh</b><extra></extra>",
+        hovertemplate="%{x|%d %b %Y}<br><b>%{y:.3f} DKK/kWh</b><extra></extra>",
         name="Daily avg",
     ))
     if len(df) >= 7:
@@ -503,7 +503,7 @@ def fig_history(hist: pd.DataFrame, days_back: int) -> go.Figure:
         **_BASE, height=320,
         title=dict(text=f"Daily average price · last {days_back} days", font_size=13),
         legend=dict(orientation="h", y=1.05, x=1, xanchor="right", bgcolor="rgba(0,0,0,0)", font=dict(color=C["text"])),
-        yaxis_title="DKK/MWh",
+        yaxis_title="DKK/kWh",
     )
     return fig
 
@@ -536,7 +536,7 @@ def fig_context(
     fig.add_trace(go.Scatter(
         x=hourly_hist["_ts_h"], y=hourly_hist["PriceDKK"],
         mode="lines", line=dict(color=C["price"], width=2),
-        hovertemplate="%{x|%d %b %H:%M}<br>Actual: <b>%{y:.0f} DKK/MWh</b><extra></extra>",
+        hovertemplate="%{x|%d %b %H:%M}<br>Actual: <b>%{y:.3f} DKK/kWh</b><extra></extra>",
         name="Historical actual",
     ))
 
@@ -559,7 +559,7 @@ def fig_context(
                 mode="lines", line=dict(width=0),
                 fill="tonexty",
                 fillcolor="rgba(167,139,250,0.13)",
-                hovertemplate="%{x|%d %b %H:%M}<br>±1σ: <b>%{y:.0f}</b><extra></extra>",
+                hovertemplate="%{x|%d %b %H:%M}<br>±1σ: <b>%{y:.3f}</b><extra></extra>",
                 name="±1σ confidence",
             ))
 
@@ -569,7 +569,7 @@ def fig_context(
             mode="lines",
             line=dict(color=C["fcst"], width=2.5),
             fill="tozeroy", fillcolor=C["fcst_fill"],
-            hovertemplate="%{x|%d %b %H:%M}<br>XGBoost: <b>%{y:.0f} DKK/MWh</b><extra></extra>",
+            hovertemplate="%{x|%d %b %H:%M}<br>XGBoost: <b>%{y:.3f} DKK/kWh</b><extra></extra>",
             name="XGBoost forecast",
         ))
 
@@ -579,7 +579,7 @@ def fig_context(
                 x=hourly_fcst["target_time"], y=hourly_fcst["actual_dkk"],
                 mode="lines",
                 line=dict(color=C["good"], width=2, dash="dot"),
-                hovertemplate="%{x|%d %b %H:%M}<br>Actual: <b>%{y:.0f} DKK/MWh</b><extra></extra>",
+                hovertemplate="%{x|%d %b %H:%M}<br>Actual: <b>%{y:.3f} DKK/kWh</b><extra></extra>",
                 name="Actual (for comparison)",
             ))
 
@@ -596,7 +596,7 @@ def fig_context(
         **_BASE, height=400,
         title=dict(text="Historical context + XGBoost 5-day forecast · hourly resolution", font_size=13),
         legend=dict(orientation="h", y=1.05, x=1, xanchor="right", bgcolor="rgba(0,0,0,0)", font=dict(color=C["text"])),
-        yaxis_title="DKK/MWh",
+        yaxis_title="DKK/kWh",
     )
     return fig
 
@@ -654,7 +654,7 @@ def fig_shap(shap_vals: pd.DataFrame, shap_feat: pd.DataFrame, top_n: int = 8) -
 
     # Iterate bottom → top so highest-importance feature renders at top of y-axis
     for i, feat in enumerate(reversed(top_feats)):
-        sv    = shap_vals[feat].values
+        sv    = shap_vals[feat].values / 1000
         fv    = shap_feat[feat].values
         fv_n  = (fv - fv.min()) / (fv.max() - fv.min() + 1e-8)
         jit   = rng.uniform(-0.35, 0.35, size=len(sv))
@@ -681,7 +681,7 @@ def fig_shap(shap_vals: pd.DataFrame, shap_feat: pd.DataFrame, top_n: int = 8) -
                     x=1.02,
                 ) if show_cb else None,
             ),
-            hovertemplate=f"{clean(feat)}<br>SHAP: <b>%{{x:.3f}}</b><extra></extra>",
+            hovertemplate=f"{clean(feat)}<br>SHAP: <b>%{{x:.4f}}</b><extra></extra>",
             showlegend=False,
         ))
 
@@ -691,7 +691,7 @@ def fig_shap(shap_vals: pd.DataFrame, shap_feat: pd.DataFrame, top_n: int = 8) -
         "height": 380,
         "showlegend": False,
         "title": dict(text="SHAP values · XGBoost Day 1 model  (red = high feature value, blue = low)", font_size=13),
-        "xaxis": dict(**{**_BASE["xaxis"], "zeroline": True, "zerolinecolor": C["border"]}, title="SHAP value (EUR/MWh impact)"),
+        "xaxis": dict(**{**_BASE["xaxis"], "zeroline": True, "zerolinecolor": C["border"]}, title="SHAP value (EUR/kWh impact)"),
         "yaxis": dict(**{
             **_BASE["yaxis"],
             "showgrid": False,
@@ -837,20 +837,20 @@ def render_forecast_cards(fcst: pd.DataFrame, today_avg: float) -> None:
     cols = st.columns(len(fcst))
     for col, (_, row) in zip(cols, fcst.iterrows()):
         delta = row["pred_dkk"] - today_avg
-        if delta > 25:
-            tag = f"<span class='tag-up'>↑ +{delta:.0f}</span>"
-        elif delta < -25:
-            tag = f"<span class='tag-dn'>↓ {delta:.0f}</span>"
+        if delta > 0.025:
+            tag = f"<span class='tag-up'>↑ +{delta:.3f}</span>"
+        elif delta < -0.025:
+            tag = f"<span class='tag-dn'>↓ {delta:.3f}</span>"
         else:
-            tag = f"<span class='tag-eq'>→ {delta:+.0f}</span>"
+            tag = f"<span class='tag-eq'>→ {delta:+.3f}</span>"
 
         col.markdown(f"""
         <div class="fcard">
             <div class="kpi-label" style="font-size:.7rem;">{row['Date'].strftime('%a')}</div>
             <div class="kpi-label">{row['Date'].strftime('%d %b')}</div>
             <div style="font-size:1.75rem; font-weight:900; color:{C['fcst']};
-                        margin:.25rem 0 .1rem 0;">{row['pred_dkk']:.0f}</div>
-            <div class="kpi-unit">DKK/MWh · daily avg</div>
+                        margin:.25rem 0 .1rem 0;">{row['pred_dkk']:.3f}</div>
+            <div class="kpi-unit">DKK/kWh · daily avg</div>
             <div style="margin-top:.55rem;">{tag} vs today avg</div>
         </div>
         """, unsafe_allow_html=True)
@@ -933,16 +933,16 @@ def render_sidebar(
             for day in range(1, 6):
                 col_name = f"day{day}_mae"
                 if col_name in recent.columns:
-                    mae = recent[col_name].mean()
+                    mae = recent[col_name].mean() / 1000
                     st.markdown(
                         f"<span style='color:{C['muted']};font-size:.76rem;'>Day {day}</span> "
-                        f"**{mae:.1f}** "
-                        f"<span style='color:{C['muted']};font-size:.76rem;'>EUR/MWh MAE</span>",
+                        f"**{mae:.4f}** "
+                        f"<span style='color:{C['muted']};font-size:.76rem;'>EUR/kWh MAE</span>",
                         unsafe_allow_html=True,
                     )
 
         st.divider()
-        st.caption("Energi Data Service · DK1 West Denmark\nPrices in DKK/MWh")
+        st.caption("Energi Data Service · DK1 West Denmark\nPrices in DKK/kWh")
 
     return days_back, ctx_days, show_raw, selected_issue, show_actuals
 
@@ -1013,12 +1013,12 @@ def main() -> None:
     # ── KPI cards ─────────────────────────────────────────────────────────────
     k1, k2, k3, k4 = st.columns(4)
     for col, label, value, unit, color in [
-        (k1, "Today's average price",     today_avg, "DKK/MWh",               C["price"]),
-        (k2, "Today's minimum",           today_min, "DKK/MWh",               C["good"]),
-        (k3, "Today's maximum",           today_max, "DKK/MWh",               C["warn"]),
-        (k4, "5-day forecast avg · XGBoost", fcst_avg, "DKK/MWh predicted",   C["fcst"]),
+        (k1, "Today's average price",     today_avg, "DKK/kWh",               C["price"]),
+        (k2, "Today's minimum",           today_min, "DKK/kWh",               C["good"]),
+        (k3, "Today's maximum",           today_max, "DKK/kWh",               C["warn"]),
+        (k4, "5-day forecast avg · XGBoost", fcst_avg, "DKK/kWh predicted",   C["fcst"]),
     ]:
-        val_str = f"{value:.0f}" if pd.notna(value) else "–"
+        val_str = f"{value:.3f}" if pd.notna(value) else "–"
         col.markdown(f"""
         <div class="kpi">
             <div class="kpi-label">{label}</div>
