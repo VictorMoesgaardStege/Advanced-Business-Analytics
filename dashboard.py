@@ -453,7 +453,6 @@ _BASE = dict(
     margin        = dict(l=10, r=10, t=36, b=10),
     xaxis         = _AXIS,
     yaxis         = _AXIS,
-    legend        = dict(font=dict(color=C["text"]), bgcolor="rgba(0,0,0,0)"),
     hoverlabel    = dict(bgcolor=C["bg"], bordercolor=C["border"],
                          font=dict(color=C["text"])),
 )
