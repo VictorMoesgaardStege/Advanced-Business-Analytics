@@ -30,10 +30,6 @@ DEFAULT_MODEL = "ecmwf_ifs"
 
 DEFAULT_LOCATIONS = [
     {"region": "DK1_west", "latitude": 56.15, "longitude": 8.45},
-    {"region": "DK2_east", "latitude": 55.68, "longitude": 12.57},
-    {"region": "SE_south", "latitude": 55.60, "longitude": 13.00},
-    {"region": "NO_south", "latitude": 58.15, "longitude": 8.00},
-    {"region": "DE_north", "latitude": 54.30, "longitude": 9.70},
 ]
 
 DEFAULT_HOURLY_VARS = [
