@@ -440,15 +440,22 @@ Style guide:
 
 
 # ── Chart helpers ─────────────────────────────────────────────────────────────
+_AXIS = dict(
+    showgrid=True, gridcolor=C["grid"], zeroline=False,
+    linecolor=C["border"], color=C["text"],
+    tickfont=dict(color=C["text"]), title_font=dict(color=C["text"]),
+)
 _BASE = dict(
     template      = "plotly_white",
     paper_bgcolor = C["card"],
     plot_bgcolor  = C["card"],
     font          = dict(color=C["text"], size=12),
     margin        = dict(l=10, r=10, t=36, b=10),
-    xaxis         = dict(showgrid=True, gridcolor=C["grid"], zeroline=False, linecolor=C["border"]),
-    yaxis         = dict(showgrid=True, gridcolor=C["grid"], zeroline=False, linecolor=C["border"]),
-    hoverlabel    = dict(bgcolor=C["bg"], bordercolor=C["border"]),
+    xaxis         = _AXIS,
+    yaxis         = _AXIS,
+    legend        = dict(font=dict(color=C["text"]), bgcolor="rgba(0,0,0,0)"),
+    hoverlabel    = dict(bgcolor=C["bg"], bordercolor=C["border"],
+                         font=dict(color=C["text"])),
 )
 
 
@@ -502,7 +509,7 @@ def fig_history(hist: pd.DataFrame, days_back: int) -> go.Figure:
     fig.update_layout(
         **_BASE, height=320,
         title=dict(text=f"Daily average price · last {days_back} days", font_size=13),
-        legend=dict(orientation="h", y=1.05, x=1, xanchor="right", bgcolor="rgba(0,0,0,0)"),
+        legend=dict(orientation="h", y=1.05, x=1, xanchor="right", bgcolor="rgba(0,0,0,0)", font=dict(color=C["text"])),
         yaxis_title="DKK/MWh",
     )
     return fig
@@ -595,7 +602,7 @@ def fig_context(
     fig.update_layout(
         **_BASE, height=400,
         title=dict(text="Historical context + XGBoost 5-day forecast · hourly resolution", font_size=13),
-        legend=dict(orientation="h", y=1.05, x=1, xanchor="right", bgcolor="rgba(0,0,0,0)"),
+        legend=dict(orientation="h", y=1.05, x=1, xanchor="right", bgcolor="rgba(0,0,0,0)", font=dict(color=C["text"])),
         yaxis_title="DKK/MWh",
     )
     return fig
@@ -815,7 +822,7 @@ def fig_weather(
         hoverlabel=dict(bgcolor=C["bg"], bordercolor=C["border"]),
         legend=dict(
             orientation="h", y=-0.08, x=0.5, xanchor="center",
-            bgcolor="rgba(0,0,0,0)", font=dict(size=10),
+            bgcolor="rgba(0,0,0,0)", font=dict(size=10, color=C["text"]),
             groupclick="toggleitem",
             tracegroupgap=4,
         ),
