@@ -458,6 +458,25 @@ _BASE = dict(
 )
 
 
+def _fix_colors(fig: go.Figure) -> go.Figure:
+    """Force all axis text to dark grey — covers primary, secondary, and subplot axes."""
+    fig.update_xaxes(
+        color=C["text"],
+        tickfont=dict(color=C["text"]),
+        title_font=dict(color=C["text"]),
+    )
+    fig.update_yaxes(
+        color=C["text"],
+        tickfont=dict(color=C["text"]),
+        title_font=dict(color=C["text"]),
+    )
+    fig.update_layout(
+        font=dict(color=C["text"]),
+        title_font=dict(color=C["text"]),
+    )
+    return _fix_colors(fig)
+
+
 def fig_today(hourly: pd.DataFrame, date: pd.Timestamp) -> go.Figure:
     fig = go.Figure()
     fig.add_trace(go.Scatter(
@@ -484,7 +503,7 @@ def fig_today(hourly: pd.DataFrame, date: pd.Timestamp) -> go.Figure:
         "xaxis": dict(**_BASE["xaxis"], dtick=3, ticksuffix=":00", range=[-0.5, 23.5]),
         "yaxis_title": "DKK/MWh",
     })
-    return fig
+    return _fix_colors(fig)
 
 
 def fig_history(hist: pd.DataFrame, days_back: int) -> go.Figure:
@@ -511,7 +530,7 @@ def fig_history(hist: pd.DataFrame, days_back: int) -> go.Figure:
         legend=dict(orientation="h", y=1.05, x=1, xanchor="right", bgcolor="rgba(0,0,0,0)", font=dict(color=C["text"])),
         yaxis_title="DKK/MWh",
     )
-    return fig
+    return _fix_colors(fig)
 
 
 def fig_context(
@@ -604,7 +623,7 @@ def fig_context(
         legend=dict(orientation="h", y=1.05, x=1, xanchor="right", bgcolor="rgba(0,0,0,0)", font=dict(color=C["text"])),
         yaxis_title="DKK/MWh",
     )
-    return fig
+    return _fix_colors(fig)
 
 
 def fig_feature_importance(imp_df: pd.DataFrame, top_n: int = 5) -> go.Figure:
@@ -644,7 +663,7 @@ def fig_feature_importance(imp_df: pd.DataFrame, top_n: int = 5) -> go.Figure:
         "yaxis": dict(**{**_BASE["yaxis"], "showgrid": False}),
         "margin": dict(l=10, r=10, t=36, b=10),
     })
-    return fig
+    return _fix_colors(fig)
 
 
 def fig_shap(shap_vals: pd.DataFrame, shap_feat: pd.DataFrame, top_n: int = 8) -> go.Figure:
@@ -707,7 +726,7 @@ def fig_shap(shap_vals: pd.DataFrame, shap_feat: pd.DataFrame, top_n: int = 8) -
         }),
         "margin": dict(l=10, r=20, t=42, b=10),
     })
-    return fig
+    return _fix_colors(fig)
 
 
 def fig_weather(
@@ -835,7 +854,7 @@ def fig_weather(
     for ann in fig.layout.annotations:
         ann.font.color = C["muted"]
         ann.font.size  = 11
-    return fig
+    return _fix_colors(fig)
 
 
 # ── Forecast cards ────────────────────────────────────────────────────────────
