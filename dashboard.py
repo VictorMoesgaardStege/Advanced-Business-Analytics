@@ -474,7 +474,7 @@ def _fix_colors(fig: go.Figure) -> go.Figure:
         font=dict(color=C["text"]),
         title_font=dict(color=C["text"]),
     )
-    return _fix_colors(fig)
+    return fig
 
 
 def fig_today(hourly: pd.DataFrame, date: pd.Timestamp) -> go.Figure:
