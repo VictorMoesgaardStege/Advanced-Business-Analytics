@@ -26,19 +26,19 @@ WEATHER_VARS = {
 }
 
 C = {
-    "bg":          "#0f172a",
-    "card":        "#1e293b",
-    "border":      "#334155",
-    "text":        "#f1f5f9",
-    "muted":       "#94a3b8",
-    "accent":      "#38bdf8",
-    "price":       "#fb923c",
-    "price_fill":  "rgba(251,146,60,0.12)",
-    "fcst":        "#a78bfa",
-    "fcst_fill":   "rgba(167,139,250,0.12)",
-    "good":        "#4ade80",
-    "warn":        "#f87171",
-    "grid":        "rgba(148,163,184,0.07)",
+    "bg":          "#ffffff",
+    "card":        "#f8fafc",
+    "border":      "#e2e8f0",
+    "text":        "#0f172a",
+    "muted":       "#64748b",
+    "accent":      "#0284c7",
+    "price":       "#ea580c",
+    "price_fill":  "rgba(234,88,12,0.10)",
+    "fcst":        "#7c3aed",
+    "fcst_fill":   "rgba(124,58,237,0.10)",
+    "good":        "#16a34a",
+    "warn":        "#dc2626",
+    "grid":        "rgba(100,116,139,0.12)",
 }
 
 
@@ -441,7 +441,7 @@ Style guide:
 
 # ── Chart helpers ─────────────────────────────────────────────────────────────
 _BASE = dict(
-    template      = "plotly_dark",
+    template      = "plotly_white",
     paper_bgcolor = C["card"],
     plot_bgcolor  = C["card"],
     font          = dict(color=C["text"], size=12),
