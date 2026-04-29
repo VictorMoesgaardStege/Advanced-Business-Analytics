@@ -502,7 +502,7 @@ def fig_history(hist: pd.DataFrame, days_back: int) -> go.Figure:
     fig.update_layout(
         **_BASE, height=320,
         title=dict(text=f"Daily average price · last {days_back} days", font_size=13),
-        legend=dict(orientation="h", y=1.05, x=1, xanchor="right", bgcolor="rgba(0,0,0,0)"),
+        legend=dict(orientation="h", y=1.05, x=1, xanchor="right", bgcolor="rgba(0,0,0,0)", font=dict(color=C["text"])),
         yaxis_title="DKK/MWh",
     )
     return fig
@@ -595,7 +595,7 @@ def fig_context(
     fig.update_layout(
         **_BASE, height=400,
         title=dict(text="Historical context + XGBoost 5-day forecast · hourly resolution", font_size=13),
-        legend=dict(orientation="h", y=1.05, x=1, xanchor="right", bgcolor="rgba(0,0,0,0)"),
+        legend=dict(orientation="h", y=1.05, x=1, xanchor="right", bgcolor="rgba(0,0,0,0)", font=dict(color=C["text"])),
         yaxis_title="DKK/MWh",
     )
     return fig
@@ -815,7 +815,7 @@ def fig_weather(
         hoverlabel=dict(bgcolor=C["bg"], bordercolor=C["border"]),
         legend=dict(
             orientation="h", y=-0.08, x=0.5, xanchor="center",
-            bgcolor="rgba(0,0,0,0)", font=dict(size=10),
+            bgcolor="rgba(0,0,0,0)", font=dict(size=10, color=C["text"]),
             groupclick="toggleitem",
             tracegroupgap=4,
         ),
