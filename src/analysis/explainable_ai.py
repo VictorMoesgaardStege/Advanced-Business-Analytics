@@ -41,6 +41,8 @@ from src.models.XG_Boost_full_Res import (
     prepare_dataset,
 )
 
+EUR_DKK = 7.46  # fixed conversion rate; model outputs EUR/MWh → DKK/MWh
+
 # ── Plots ──────────────────────────────────────────────────────────────────────
 
 def plot_wf_mae(metrics_df: pd.DataFrame, out: Path) -> None:
@@ -292,7 +294,7 @@ def plot_shap(final_models: dict, df: pd.DataFrame, out: Path) -> None:
         X_samp = df.loc[mask, FEATURES].sample(min(SAMPLE_N, mask.sum()), random_state=42)
 
         explainer   = shap.TreeExplainer(model)
-        shap_vals   = explainer.shap_values(X_samp)
+        shap_vals   = explainer.shap_values(X_samp) * EUR_DKK
         mean_abs    = np.abs(shap_vals).mean(axis=0)
         mean_signed = shap_vals.mean(axis=0)
         order       = np.argsort(mean_abs)[-12:]
@@ -301,7 +303,7 @@ def plot_shap(final_models: dict, df: pd.DataFrame, out: Path) -> None:
 
         ax.barh(feat_labels, mean_abs[order], color=bar_colors)
         ax.set_title(f"Day {day} (h{h_lo}-{h_hi})", fontsize=10)
-        ax.set_xlabel("Mean |SHAP| (EUR/MWh)", fontsize=8)
+        ax.set_xlabel("Mean |SHAP| (DKK/MWh)", fontsize=8)
         ax.tick_params(axis="y", labelsize=7)
 
     fig.suptitle(
@@ -314,8 +316,9 @@ def plot_shap(final_models: dict, df: pd.DataFrame, out: Path) -> None:
     plt.close(fig)
     print("  fig9 saved")
 
-    # fig10: beeswarm per day model
-    for day, (h_lo, h_hi) in DAY_GROUPS.items():
+    # fig10: all 5 beeswarm plots in one figure
+    fig10, axes10 = plt.subplots(1, 5, figsize=(40, 8))
+    for ax, (day, (h_lo, h_hi)) in zip(axes10, DAY_GROUPS.items()):
         model  = final_models[day]
         mask   = df["horizon_h"].between(h_lo, h_hi)
         X_samp = df.loc[mask, FEATURES].sample(min(SAMPLE_N, mask.sum()), random_state=42)
@@ -323,21 +326,22 @@ def plot_shap(final_models: dict, df: pd.DataFrame, out: Path) -> None:
         explainer = shap.TreeExplainer(model)
         shap_expl = explainer(X_samp)
 
-        fig_bees, ax_bees = plt.subplots(figsize=(9, 7))
-        plt.sca(ax_bees)
+        plt.sca(ax)
         shap.summary_plot(
-            shap_expl.values, X_samp,
+            shap_expl.values * EUR_DKK, X_samp,
             feature_names=FEATURES,
             max_display=12,
             show=False,
             plot_size=None,
         )
-        ax_bees.set_title(f"SHAP beeswarm  --  Day {day} (h{h_lo}-{h_hi})", fontsize=11)
-        ax_bees.set_xlabel("SHAP value (EUR/MWh impact on prediction)")
-        fig_bees.tight_layout()
-        fig_bees.savefig(out / f"fig10_shap_beeswarm_day{day}.png", dpi=150)
-        plt.close(fig_bees)
-        print(f"  fig10 day{day} saved")
+        ax.set_title(f"Day {day} (h{h_lo}-{h_hi})", fontsize=11)
+        ax.set_xlabel("SHAP value (DKK/MWh impact on prediction)", fontsize=8)
+
+    fig10.suptitle("SHAP beeswarm  --  all day models", fontsize=13, y=1.01)
+    fig10.tight_layout()
+    fig10.savefig(out / "fig10_shap_beeswarm.png", dpi=150, bbox_inches="tight")
+    plt.close(fig10)
+    print("  fig10 saved")
 
 
 def export_shap_for_dashboard(final_models: dict, df: pd.DataFrame, out: Path) -> None:
