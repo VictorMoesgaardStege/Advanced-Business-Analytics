@@ -23,7 +23,7 @@ import csv
 import json
 import sys
 import time
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -61,19 +61,6 @@ def build_hourly_vars(base_vars: list[str], max_previous_day: int = 5) -> list[s
 
 DEFAULT_HOURLY_VARS = build_hourly_vars(BASE_VARS, max_previous_day=5)
 
-
-def month_ranges(start: date, end: date):
-    cur = start.replace(day=1)
-    while cur <= end:
-        if cur.month == 12:
-            next_month = cur.replace(year=cur.year + 1, month=1, day=1)
-        else:
-            next_month = cur.replace(month=cur.month + 1, day=1)
-
-        chunk_start = max(cur, start)
-        chunk_end = min(next_month - timedelta(days=1), end)
-        yield chunk_start, chunk_end
-        cur = next_month
 
 
 def fetch_json(session: requests.Session, params: dict[str, Any], timeout: int = 60) -> dict[str, Any]:
@@ -160,29 +147,24 @@ def fetch_records(
     for location in locations:
         region_name = str(location["region"])
 
-        for chunk_start, chunk_end in month_ranges(start_date, end_date):
-            params = {
-                "latitude": location["latitude"],
-                "longitude": location["longitude"],
-                "start_date": chunk_start.isoformat(),
-                "end_date": chunk_end.isoformat(),
-                "hourly": ",".join(hourly_vars),
-                "models": model,
-                "timezone": timezone,
-                "wind_speed_unit": wind_speed_unit,
-                "temperature_unit": temperature_unit,
-                "precipitation_unit": precipitation_unit,
-            }
+        params = {
+            "latitude": location["latitude"],
+            "longitude": location["longitude"],
+            "start_date": start_date.isoformat(),
+            "end_date": end_date.isoformat(),
+            "hourly": ",".join(hourly_vars),
+            "models": model,
+            "timezone": timezone,
+            "wind_speed_unit": wind_speed_unit,
+            "temperature_unit": temperature_unit,
+            "precipitation_unit": precipitation_unit,
+        }
 
-            payload = fetch_json(session, params)
-            records = response_to_records(payload, region_name)
-            all_records.extend(records)
+        payload = fetch_json(session, params)
+        records = response_to_records(payload, region_name)
+        all_records.extend(records)
 
-            print(
-                f"Fetched {len(records)} row(s) for {region_name} "
-                f"from {chunk_start} to {chunk_end}"
-            )
-            time.sleep(1.0)
+        print(f"Fetched {len(records)} row(s) for {region_name} from {start_date} to {end_date}")
 
     return all_records
 
