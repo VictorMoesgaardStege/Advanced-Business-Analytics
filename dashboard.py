@@ -26,19 +26,19 @@ WEATHER_VARS = {
 }
 
 C = {
-    "bg":          "#f1f5f9",
-    "card":        "#e8edf2",
-    "border":      "#cbd5e1",
-    "text":        "#374151",
-    "muted":       "#6b7280",
-    "accent":      "#0284c7",
-    "price":       "#ea580c",
-    "price_fill":  "rgba(234,88,12,0.10)",
-    "fcst":        "#7c3aed",
-    "fcst_fill":   "rgba(124,58,237,0.10)",
-    "good":        "#16a34a",
-    "warn":        "#dc2626",
-    "grid":        "rgba(100,116,139,0.12)",
+    "bg":          "#0f172a",
+    "card":        "#1e293b",
+    "border":      "#334155",
+    "text":        "#f1f5f9",
+    "muted":       "#94a3b8",
+    "accent":      "#38bdf8",
+    "price":       "#fb923c",
+    "price_fill":  "rgba(251,146,60,0.12)",
+    "fcst":        "#a78bfa",
+    "fcst_fill":   "rgba(167,139,250,0.12)",
+    "good":        "#4ade80",
+    "warn":        "#f87171",
+    "grid":        "rgba(148,163,184,0.07)",
 }
 
 
@@ -440,41 +440,16 @@ Style guide:
 
 
 # ── Chart helpers ─────────────────────────────────────────────────────────────
-_AXIS = dict(
-    showgrid=True, gridcolor=C["grid"], zeroline=False,
-    linecolor=C["border"], color=C["text"],
-    tickfont=dict(color=C["text"]), title_font=dict(color=C["text"]),
-)
 _BASE = dict(
-    template      = "plotly_white",
+    template      = "plotly_dark",
     paper_bgcolor = C["card"],
     plot_bgcolor  = C["card"],
     font          = dict(color=C["text"], size=12),
     margin        = dict(l=10, r=10, t=36, b=10),
-    xaxis         = _AXIS,
-    yaxis         = _AXIS,
-    hoverlabel    = dict(bgcolor=C["bg"], bordercolor=C["border"],
-                         font=dict(color=C["text"])),
+    xaxis         = dict(showgrid=True, gridcolor=C["grid"], zeroline=False, linecolor=C["border"]),
+    yaxis         = dict(showgrid=True, gridcolor=C["grid"], zeroline=False, linecolor=C["border"]),
+    hoverlabel    = dict(bgcolor=C["bg"], bordercolor=C["border"]),
 )
-
-
-def _fix_colors(fig: go.Figure) -> go.Figure:
-    """Force all axis text to dark grey — covers primary, secondary, and subplot axes."""
-    fig.update_xaxes(
-        color=C["text"],
-        tickfont=dict(color=C["text"]),
-        title_font=dict(color=C["text"]),
-    )
-    fig.update_yaxes(
-        color=C["text"],
-        tickfont=dict(color=C["text"]),
-        title_font=dict(color=C["text"]),
-    )
-    fig.update_layout(
-        font=dict(color=C["text"]),
-        title_font=dict(color=C["text"]),
-    )
-    return fig
 
 
 def fig_today(hourly: pd.DataFrame, date: pd.Timestamp) -> go.Figure:
@@ -503,7 +478,7 @@ def fig_today(hourly: pd.DataFrame, date: pd.Timestamp) -> go.Figure:
         "xaxis": dict(**_BASE["xaxis"], dtick=3, ticksuffix=":00", range=[-0.5, 23.5]),
         "yaxis_title": "DKK/kWh",
     })
-    return _fix_colors(fig)
+    return fig
 
 
 def fig_history(hist: pd.DataFrame, days_back: int) -> go.Figure:
@@ -530,7 +505,7 @@ def fig_history(hist: pd.DataFrame, days_back: int) -> go.Figure:
         legend=dict(orientation="h", y=1.05, x=1, xanchor="right", bgcolor="rgba(0,0,0,0)", font=dict(color=C["text"])),
         yaxis_title="DKK/kWh",
     )
-    return _fix_colors(fig)
+    return fig
 
 
 def fig_context(
@@ -623,7 +598,7 @@ def fig_context(
         legend=dict(orientation="h", y=1.05, x=1, xanchor="right", bgcolor="rgba(0,0,0,0)", font=dict(color=C["text"])),
         yaxis_title="DKK/kWh",
     )
-    return _fix_colors(fig)
+    return fig
 
 
 def fig_feature_importance(imp_df: pd.DataFrame, top_n: int = 5) -> go.Figure:
@@ -663,7 +638,7 @@ def fig_feature_importance(imp_df: pd.DataFrame, top_n: int = 5) -> go.Figure:
         "yaxis": dict(**{**_BASE["yaxis"], "showgrid": False}),
         "margin": dict(l=10, r=10, t=36, b=10),
     })
-    return _fix_colors(fig)
+    return fig
 
 
 def fig_shap(shap_vals: pd.DataFrame, shap_feat: pd.DataFrame, eur_dkk: float, top_n: int = 8) -> go.Figure:
@@ -726,7 +701,7 @@ def fig_shap(shap_vals: pd.DataFrame, shap_feat: pd.DataFrame, eur_dkk: float, t
         }),
         "margin": dict(l=10, r=20, t=42, b=10),
     })
-    return _fix_colors(fig)
+    return fig
 
 
 def fig_weather(
@@ -831,7 +806,7 @@ def fig_weather(
             )
 
     fig.update_layout(
-        template="plotly_white",
+        template="plotly_dark",
         paper_bgcolor=C["card"],
         plot_bgcolor=C["card"],
         font=dict(color=C["text"], size=12),
@@ -854,7 +829,7 @@ def fig_weather(
     for ann in fig.layout.annotations:
         ann.font.color = C["muted"]
         ann.font.size  = 11
-    return _fix_colors(fig)
+    return fig
 
 
 # ── Forecast cards ────────────────────────────────────────────────────────────
