@@ -1,5 +1,5 @@
 """
-data_processing.py  —  Build the XGBoost model input dataset
+data_processing.py  —  Build the input dataset for the XGBoost model
 =============================================================
 Reads weather actuals and error distributions, simulates NWP-style
 forecasts by adding horizon-scaled Gaussian noise, and saves the
