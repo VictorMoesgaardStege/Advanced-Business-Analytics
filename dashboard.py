@@ -1084,7 +1084,7 @@ def main() -> None:
                     use_container_width=True, config={"displayModeBar": False},
                 )
             else:
-                st.info("Feature importance unavailable — run `XG_Boost_full_Res.py` to generate `final_day_models.joblib`.")
+                st.info("Feature importance unavailable — run `src/models/XG_Boost_full_Res.py` to generate `final_day_models.joblib`.")
 
         with shap_col:
             if has_shap:
@@ -1093,7 +1093,7 @@ def main() -> None:
                     use_container_width=True, config={"displayModeBar": False},
                 )
             else:
-                st.info("SHAP data unavailable — run `XG_Boost_full_Res.py` to generate `shap_day1_*.parquet`.")
+                st.info("SHAP data unavailable — run `src/analysis/explainable_ai.py` to generate `shap_day1_*.parquet`.")
 
     # ── Weather explorer ──────────────────────────────────────────────────────
     weather = load_weather_data()
