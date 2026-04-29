@@ -194,7 +194,7 @@ def compute_eur_dkk(prices: pd.DataFrame) -> float:
     if prices.empty or "PriceEUR" not in prices.columns:
         return EUR_DKK_FB
     valid = prices.dropna(subset=["PriceDKK", "PriceEUR"])
-    valid = valid[valid["PriceEUR"] > 1]
+    valid = valid[valid["PriceEUR"] > 0.001]
     if len(valid) < 24:
         return EUR_DKK_FB
     return float((valid["PriceDKK"] / valid["PriceEUR"]).tail(24 * 90).median())
@@ -641,7 +641,7 @@ def fig_feature_importance(imp_df: pd.DataFrame, top_n: int = 5) -> go.Figure:
     return fig
 
 
-def fig_shap(shap_vals: pd.DataFrame, shap_feat: pd.DataFrame, top_n: int = 8) -> go.Figure:
+def fig_shap(shap_vals: pd.DataFrame, shap_feat: pd.DataFrame, eur_dkk: float, top_n: int = 8) -> go.Figure:
     """Beeswarm-style SHAP scatter: x=SHAP value, y=feature, colour=feature magnitude."""
     def clean(name: str) -> str:
         return name.replace("fcst_", "").replace("_", " ").title()
@@ -654,7 +654,7 @@ def fig_shap(shap_vals: pd.DataFrame, shap_feat: pd.DataFrame, top_n: int = 8) -
 
     # Iterate bottom → top so highest-importance feature renders at top of y-axis
     for i, feat in enumerate(reversed(top_feats)):
-        sv    = shap_vals[feat].values / 1000
+        sv    = shap_vals[feat].values * eur_dkk / 1000
         fv    = shap_feat[feat].values
         fv_n  = (fv - fv.min()) / (fv.max() - fv.min() + 1e-8)
         jit   = rng.uniform(-0.35, 0.35, size=len(sv))
@@ -691,7 +691,7 @@ def fig_shap(shap_vals: pd.DataFrame, shap_feat: pd.DataFrame, top_n: int = 8) -
         "height": 380,
         "showlegend": False,
         "title": dict(text="SHAP values · XGBoost Day 1 model  (red = high feature value, blue = low)", font_size=13),
-        "xaxis": dict(**{**_BASE["xaxis"], "zeroline": True, "zerolinecolor": C["border"]}, title="SHAP value (EUR/kWh impact)"),
+        "xaxis": dict(**{**_BASE["xaxis"], "zeroline": True, "zerolinecolor": C["border"]}, title="SHAP value (DKK/kWh impact)"),
         "yaxis": dict(**{
             **_BASE["yaxis"],
             "showgrid": False,
@@ -862,6 +862,7 @@ def render_sidebar(
     fcst: pd.DataFrame,
     metrics: pd.DataFrame,
     raw_preds: pd.DataFrame,
+    eur_dkk: float = EUR_DKK_FB,
 ) -> tuple[int, int, bool, pd.Timestamp, bool]:
     with st.sidebar:
         st.markdown(f"""
@@ -933,11 +934,11 @@ def render_sidebar(
             for day in range(1, 6):
                 col_name = f"day{day}_mae"
                 if col_name in recent.columns:
-                    mae = recent[col_name].mean() / 1000
+                    mae = recent[col_name].mean() * eur_dkk / 1000
                     st.markdown(
                         f"<span style='color:{C['muted']};font-size:.76rem;'>Day {day}</span> "
                         f"**{mae:.4f}** "
-                        f"<span style='color:{C['muted']};font-size:.76rem;'>EUR/kWh MAE</span>",
+                        f"<span style='color:{C['muted']};font-size:.76rem;'>DKK/kWh MAE</span>",
                         unsafe_allow_html=True,
                     )
 
@@ -960,7 +961,7 @@ def main() -> None:
 
     # Sidebar first so selected_issue is known before building forecasts
     days_back, ctx_days, show_raw, selected_issue, show_actuals = render_sidebar(
-        prices, pd.DataFrame(), metrics, raw_preds
+        prices, pd.DataFrame(), metrics, raw_preds, eur_dkk
     )
 
     bands       = compute_forecast_bands(raw_preds, eur_dkk)
@@ -1088,7 +1089,7 @@ def main() -> None:
         with shap_col:
             if has_shap:
                 st.plotly_chart(
-                    fig_shap(shap_vals, shap_feat),
+                    fig_shap(shap_vals, shap_feat, eur_dkk),
                     use_container_width=True, config={"displayModeBar": False},
                 )
             else:
