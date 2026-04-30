@@ -99,14 +99,18 @@ pip install -r requirements.txt
 ```
 
 
-###
-python3 -m pip install -r requirements.txt
-python3 -m pip install lime
-python3 src/data/data_processing.py
-python3 src/models/XG_Boost_full_Res.py
-python3 src/analysis/explainable_ai.py
+### 2. Run the pipeline
 
-### 2. Run the project projecthandin.ipynb
+Run project modules from the repository root with `python -m ...`.
+This keeps imports consistent across data processing, model training, and analysis.
+
+```bash
+python -m src.data.data_processing
+python -m src.models.XG_Boost_full_Res
+python -m src.analysis.explainable_ai
+```
+
+### 3. Run the project projecthandin.ipynb
 
 
 ## Impact
