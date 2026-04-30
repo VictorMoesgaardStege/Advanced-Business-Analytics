@@ -320,46 +320,79 @@ def build_error_distributions(
     forecast_df = pd.read_csv(forecast_csv, parse_dates=["TimeDK"])
 
     merged = forecast_df.merge(actual_df, on=["TimeDK", "region"], how="inner",
-                               suffixes=("_fcst", "_act"))
+                               suffixes=("_forecastfile", "_actualfile"))
+    print(f"  Merged rows: {len(merged):,}")
 
     rows = []
     for fcst_base, act_base in VARIABLE_MAP.items():
-        act_col = f"{act_base}_act" if f"{act_base}_act" in merged.columns else act_base
+        # When names collide the merge adds suffixes; otherwise columns are unique
+        if fcst_base == act_base:
+            act_col = f"{act_base}_actualfile"
+        else:
+            act_col = act_base
         if act_col not in merged.columns:
             continue
+
         for horizon_h, suffix in ERR_HORIZONS.items():
             fcst_col = f"{fcst_base}_{suffix}"
             if fcst_col not in merged.columns:
                 continue
-            sub = merged[["TimeDK", "region", fcst_col, act_col]].dropna()
+
+            sub = (
+                merged[["TimeDK", "region", fcst_col, act_col]]
+                .rename(columns={fcst_col: "forecast_value", act_col: "actual_value"})
+                .dropna(subset=["forecast_value", "actual_value"])
+                .copy()
+            )
             if sub.empty:
                 continue
+
             is_dir = "direction" in fcst_base
-            sub = sub.copy()
-            sub["error"] = (_circular_diff(sub[fcst_col], sub[act_col])
-                            if is_dir else sub[fcst_col] - sub[act_col])
+            sub["error"] = (_circular_diff(sub["forecast_value"], sub["actual_value"])
+                            if is_dir else sub["forecast_value"] - sub["actual_value"])
             sub["forecast_variable"] = fcst_base
+            sub["actual_variable"]   = act_base
             sub["horizon_hours"]     = horizon_h
-            rows.append(sub[["TimeDK", "region", "forecast_variable", "horizon_hours", "error"]])
+            rows.append(sub[[
+                "TimeDK", "region",
+                "forecast_variable", "actual_variable", "horizon_hours",
+                "forecast_value", "actual_value", "error",
+            ]])
 
-    error_df = pd.concat(rows, ignore_index=True) if rows else pd.DataFrame()
+    error_df = pd.concat(rows, ignore_index=True) if rows else pd.DataFrame(columns=[
+        "TimeDK", "region", "forecast_variable", "actual_variable",
+        "horizon_hours", "forecast_value", "actual_value", "error",
+    ])
+    print(f"  Error rows: {len(error_df):,}")
 
-    summary_df = (
-        error_df.groupby(["forecast_variable", "horizon_hours"])["error"]
-        .agg(n="count", mean_error="mean", std_error="std",
-             p05_error=lambda x: np.quantile(x, 0.05),
-             p25_error=lambda x: np.quantile(x, 0.25),
-             p50_error=lambda x: np.quantile(x, 0.50),
-             p75_error=lambda x: np.quantile(x, 0.75),
-             p95_error=lambda x: np.quantile(x, 0.95))
-        .reset_index()
-        .sort_values(["forecast_variable", "horizon_hours"])
-        .reset_index(drop=True)
-    )
+    if not error_df.empty:
+        grp = error_df.groupby(["forecast_variable", "actual_variable", "horizon_hours"])["error"]
+        summary_df = grp.agg(
+            n            = "count",
+            mean_error   = "mean",
+            std_error    = "std",
+            mae          = lambda x: np.mean(np.abs(x)),
+            rmse         = lambda x: np.sqrt(np.mean(np.square(x))),
+            p05_error    = lambda x: np.quantile(x, 0.05),
+            p25_error    = lambda x: np.quantile(x, 0.25),
+            p50_error    = lambda x: np.quantile(x, 0.50),
+            p75_error    = lambda x: np.quantile(x, 0.75),
+            p95_error    = lambda x: np.quantile(x, 0.95),
+        ).reset_index().sort_values(["forecast_variable", "horizon_hours"]).reset_index(drop=True)
+    else:
+        summary_df = pd.DataFrame(columns=[
+            "forecast_variable", "actual_variable", "horizon_hours",
+            "n", "mean_error", "std_error", "mae", "rmse",
+            "p05_error", "p25_error", "p50_error", "p75_error", "p95_error",
+        ])
 
     Path(summary_csv).parent.mkdir(parents=True, exist_ok=True)
     summary_df.to_csv(summary_csv, index=False)
-    print(f"  {len(summary_df)} rows saved -> {summary_csv}")
+    print(f"  {len(summary_df)} summary rows saved -> {summary_csv}")
+
+    if not summary_df.empty:
+        print("\nSummary preview:")
+        print(summary_df.head(20).to_string(index=False))
 
     Path(errors_csv).parent.mkdir(parents=True, exist_ok=True)
     error_df.to_csv(errors_csv, index=False)
