@@ -109,9 +109,6 @@ python3 src/analysis/explainable_ai.py
 ### 2. Run the project projecthandin.ipynb
 
 
-
-
-
 ## Impact
 
 By extending electricity price visibility from 24 hours to 120 hours, this project demonstrates how machine learning and forecasting can support smarter consumer behaviour and improved grid resilience. When many users shift consumption away from predicted high-price periods, the electricity system becomes more stable, efficient, and sustainable.
