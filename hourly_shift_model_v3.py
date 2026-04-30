@@ -12,7 +12,7 @@ HOUSEHOLD_SHARE_OF_SYSTEM = 0.33
 FORECAST_HORIZON_HOURS = 120
 ROLLING_BACKTEST_MAX_WINDOWS = 120
 ANNUAL_HEATMAP_DAILY_ISSUES = 365
-HISTORICAL_CAPACITY_QUANTILE = 0.95
+HISTORICAL_CAPACITY_QUANTILE = 0.94
 HISTORICAL_CAPACITY_BY_HOUR_OF_DAY = True
 HISTORICAL_CAPACITY_BY_DAY_TYPE = True
 EV_WEEKDAY_WORKING_HOUR_FACTOR = 0.10
@@ -26,7 +26,7 @@ SEGMENT_COLORS = {
 
 SEGMENT_ASSUMPTIONS = {
     "inflexible": {
-        "share_of_household_load": 0.55,
+        "share_of_household_load": 0.6,
         "max_shiftable_share": 0.00,
         "max_wait_h": 0,
         "wait_penalty": 0.00,
@@ -38,22 +38,22 @@ SEGMENT_ASSUMPTIONS = {
         "wait_penalty": 0.90,
     },
     "thermal": {
-        "share_of_household_load": 0.15,
+        "share_of_household_load": 0.2,
         "max_shiftable_share": 0.15,
-        "max_wait_h": 24 * 1.5,
+        "max_wait_h": 24 * 1,
         "wait_penalty": 1.20,
     },
     "ev": {
-        "share_of_household_load": 0.15,
+        "share_of_household_load": 0.1,
         "max_shiftable_share": 0.85,
         "max_wait_h": 24 * 5,
-        "wait_penalty": 0.30,
+        "wait_penalty": 0.35,
     },
 }
 
 DECISION_WEIGHTS = {
-    "price": 0.85,
-    "wait": 0.15,
+    "price": 0.80,
+    "wait": 0.20,
 }
 
 SHIFT_EVENT_COLUMNS = [
