@@ -49,8 +49,10 @@ XGB_FINAL = dict(**_XGB_BASE, n_estimators=500)
 DAY_GROUPS = {1: (1, 24), 2: (25, 48), 3: (49, 72), 4: (73, 96), 5: (97, 120)}
 
 WEATHER_FEATURES = [
-    "fcst_wind_speed_10m",     "fcst_wind_direction_10m",
-    "fcst_wind_speed_100m",    "fcst_wind_direction_100m",
+    "fcst_wind_speed_10m",
+    "fcst_wind_dir_10m_sin",  "fcst_wind_dir_10m_cos",
+    "fcst_wind_speed_100m",
+    "fcst_wind_dir_100m_sin", "fcst_wind_dir_100m_cos",
     "fcst_shortwave_radiation","fcst_cloud_cover",
     "fcst_temperature_2m",     "fcst_pressure_msl",
 ]
@@ -123,6 +125,11 @@ def prepare_dataset() -> pd.DataFrame:
     df = df.dropna(subset=[TARGET_COL] + PRICE_LAG_FEATURES).reset_index(drop=True)
     print(f"  After lag NaN drop: {len(df):,} rows")
     print(f"  Usable range: {df['issue_time'].min().date()} to {df['issue_time'].max().date()}")
+
+    for suffix in ("10m", "100m"):
+        rad = np.deg2rad(df[f"fcst_wind_direction_{suffix}"])
+        df[f"fcst_wind_dir_{suffix}_sin"] = np.sin(rad)
+        df[f"fcst_wind_dir_{suffix}_cos"] = np.cos(rad)
 
     return df.sort_values("issue_time").reset_index(drop=True)
 

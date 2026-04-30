@@ -164,10 +164,13 @@ def build_forecast_dataset(
                     )
                     fcst_val = actual_val + noise
                     lo, hi = VAR_BOUNDS[var]
-                    if lo is not None:
-                        fcst_val = max(fcst_val, lo)
-                    if hi is not None:
-                        fcst_val = min(fcst_val, hi)
+                    if lo is not None and hi is not None and "wind_direction" in var:
+                        fcst_val = fcst_val % 360
+                    else:
+                        if lo is not None:
+                            fcst_val = max(fcst_val, lo)
+                        if hi is not None:
+                            fcst_val = min(fcst_val, hi)
                     rec[f"fcst_{var}"]   = round(fcst_val, 4)
                     rec[f"actual_{var}"] = actual_val
                 records.append(rec)
