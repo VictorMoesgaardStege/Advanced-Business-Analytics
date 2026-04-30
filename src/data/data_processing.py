@@ -289,6 +289,25 @@ def plot_weather_forecast(
 
 # ── CLI entry-point ────────────────────────────────────────────────────────────
 
+VARIABLE_MAP = {
+    "temperature_2m":      "temperature_2m",
+    "pressure_msl":        "pressure_msl",
+    "cloud_cover":         "cloud_cover",
+    "shortwave_radiation": "shortwave_radiation",
+    "wind_speed_10m":      "wind_speed_10m",
+    "wind_direction_10m":  "wind_direction_10m",
+    "wind_speed_120m":     "wind_speed_100m",
+    "wind_direction_120m": "wind_direction_100m",
+}
+
+ERR_HORIZONS = {24: "previous_day1", 48: "previous_day2", 72: "previous_day3",
+                96: "previous_day4", 120: "previous_day5"}
+
+
+def _circular_diff(forecast: pd.Series, actual: pd.Series) -> pd.Series:
+    return (forecast - actual + 180) % 360 - 180
+
+
 def build_error_distributions(
     actuals_csv:  str | Path = DATA_DIR / "weather_actuals_raw.csv",
     forecast_csv: str | Path = DATA_DIR / "weather_forecasts_raw.csv",
@@ -296,17 +315,47 @@ def build_error_distributions(
     errors_csv:   str | Path = DATA_DIR / "weather_errors_raw.csv",
 ) -> None:
     """Estimate weather forecast error distributions from real NWP previous-run data."""
-    from src.data.estimate_weather_forecast_error_distributions import (
-        load_csv, merge_actuals_and_forecasts, build_error_rows, summarize_errors,
-    )
-
     print("[build_error_distributions] Loading actuals and forecasts...")
-    actual_df   = load_csv(Path(actuals_csv))
-    forecast_df = load_csv(Path(forecast_csv))
+    actual_df   = pd.read_csv(actuals_csv,  parse_dates=["TimeDK"])
+    forecast_df = pd.read_csv(forecast_csv, parse_dates=["TimeDK"])
 
-    merged     = merge_actuals_and_forecasts(actual_df, forecast_df)
-    error_df   = build_error_rows(merged)
-    summary_df = summarize_errors(error_df)
+    merged = forecast_df.merge(actual_df, on=["TimeDK", "region"], how="inner",
+                               suffixes=("_fcst", "_act"))
+
+    rows = []
+    for fcst_base, act_base in VARIABLE_MAP.items():
+        act_col = f"{act_base}_act" if f"{act_base}_act" in merged.columns else act_base
+        if act_col not in merged.columns:
+            continue
+        for horizon_h, suffix in ERR_HORIZONS.items():
+            fcst_col = f"{fcst_base}_{suffix}"
+            if fcst_col not in merged.columns:
+                continue
+            sub = merged[["TimeDK", "region", fcst_col, act_col]].dropna()
+            if sub.empty:
+                continue
+            is_dir = "direction" in fcst_base
+            sub = sub.copy()
+            sub["error"] = (_circular_diff(sub[fcst_col], sub[act_col])
+                            if is_dir else sub[fcst_col] - sub[act_col])
+            sub["forecast_variable"] = fcst_base
+            sub["horizon_hours"]     = horizon_h
+            rows.append(sub[["TimeDK", "region", "forecast_variable", "horizon_hours", "error"]])
+
+    error_df = pd.concat(rows, ignore_index=True) if rows else pd.DataFrame()
+
+    summary_df = (
+        error_df.groupby(["forecast_variable", "horizon_hours"])["error"]
+        .agg(n="count", mean_error="mean", std_error="std",
+             p05_error=lambda x: np.quantile(x, 0.05),
+             p25_error=lambda x: np.quantile(x, 0.25),
+             p50_error=lambda x: np.quantile(x, 0.50),
+             p75_error=lambda x: np.quantile(x, 0.75),
+             p95_error=lambda x: np.quantile(x, 0.95))
+        .reset_index()
+        .sort_values(["forecast_variable", "horizon_hours"])
+        .reset_index(drop=True)
+    )
 
     Path(summary_csv).parent.mkdir(parents=True, exist_ok=True)
     summary_df.to_csv(summary_csv, index=False)
