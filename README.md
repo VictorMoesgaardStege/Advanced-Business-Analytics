@@ -17,7 +17,7 @@ By translating raw price forecasts into recommendations, the system helps consum
 
 ```
 Advanced-Business-Analytics/
-├── .claude/                       # Claude configuration files
+
 ├── .devcontainer/                 # Development container configuration
 ├── .streamlit/                    # Streamlit app configuration
 ├── data/                          # Local datasets (CSV, Parquet, etc.; some files are git-ignored)
