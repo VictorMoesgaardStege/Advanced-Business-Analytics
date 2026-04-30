@@ -30,7 +30,6 @@ import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 import joblib
 from pathlib import Path
-from sklearn.metrics import mean_absolute_error
 from lime import lime_tabular
 
 ROOT = Path(__file__).parent.parent.parent
@@ -62,58 +61,6 @@ def plot_wf_mae(metrics_df: pd.DataFrame, out: Path) -> None:
     plt.close(fig)
     print("  fig1 saved")
 
-
-def plot_actual_vs_predicted(preds_df: pd.DataFrame, out: Path) -> None:
-    last_fold = preds_df["fold"].max()
-    sub = preds_df[preds_df["fold"] == last_fold].copy()
-    end_t   = sub["target_time"].max()
-    start_t = end_t - pd.Timedelta(weeks=4)
-    sub = sub[sub["target_time"] >= start_t]
-
-    fig, axes = plt.subplots(5, 1, figsize=(14, 15), sharex=True)
-    for ax, (day, (h_lo, h_hi)), color in zip(axes, DAY_GROUPS.items(), COLORS):
-        grp = (
-            sub[sub["horizon_h"].between(h_lo, h_hi)]
-            .groupby("target_time")
-            .agg(actual=(TARGET_COL, "mean"), predicted=("predicted", "mean"))
-        )
-        ax.plot(grp.index, grp["actual"],    color="black", linewidth=1.2, label="Actual")
-        ax.plot(grp.index, grp["predicted"], color=color,   linewidth=1.2,
-                linestyle="--", label="Predicted")
-        mae = mean_absolute_error(grp["actual"], grp["predicted"])
-        ax.set_title(f"Day {day}  (h{h_lo}-{h_hi})   MAE = {mae:.1f} EUR/MWh", fontsize=10)
-        ax.set_ylabel("EUR/MWh")
-        ax.legend(fontsize=8, loc="upper right")
-
-    axes[-1].set_xlabel("Target time")
-    axes[-1].xaxis.set_major_formatter(mdates.DateFormatter("%b %d"))
-    fig.autofmt_xdate()
-    fig.suptitle("Actual vs Predicted  --  last validation fold (4-week window)", fontsize=12)
-    fig.tight_layout()
-    fig.savefig(out / "fig2_actual_vs_predicted.png", dpi=150)
-    plt.close(fig)
-    print("  fig2 saved")
-
-
-def plot_mae_by_horizon(preds_df: pd.DataFrame, out: Path) -> None:
-    rows = []
-    for h in range(1, 121):
-        sub = preds_df[preds_df["horizon_h"] == h]
-        if len(sub):
-            rows.append({"h": h, "mae": mean_absolute_error(sub[TARGET_COL], sub["predicted"])})
-    res = pd.DataFrame(rows)
-
-    fig, ax = plt.subplots(figsize=(12, 4))
-    ax.plot(res["h"], res["mae"], linewidth=1.5, color="steelblue")
-    for day, (h_lo, h_hi), color in zip(DAY_GROUPS.keys(), DAY_GROUPS.values(), COLORS):
-        ax.axvspan(h_lo - 0.5, h_hi + 0.5, alpha=0.08, color=color, label=f"Day {day}")
-    ax.set(xlabel="Horizon (hours ahead)", ylabel="MAE (EUR/MWh)",
-           title="MAE by forecast horizon  (all folds)")
-    ax.legend(ncol=5)
-    fig.tight_layout()
-    fig.savefig(out / "fig3_mae_by_horizon.png", dpi=150)
-    plt.close(fig)
-    print("  fig3 saved")
 
 
 def plot_feature_importance(final_models: dict, out: Path) -> None:
@@ -151,38 +98,6 @@ def plot_error_distribution(preds_df: pd.DataFrame, out: Path) -> None:
     plt.close(fig)
     print("  fig5 saved")
 
-
-def plot_single_forecast(preds_df: pd.DataFrame, out: Path) -> None:
-    last_fold = preds_df["fold"].max()
-    issue = preds_df[preds_df["fold"] == last_fold]["issue_time"].max()
-    single = (
-        preds_df[preds_df["issue_time"] == issue]
-        .sort_values("horizon_h")
-        .copy()
-    )
-
-    fig, ax = plt.subplots(figsize=(14, 4))
-    for day, (h_lo, h_hi), color in zip(DAY_GROUPS.keys(), DAY_GROUPS.values(), COLORS):
-        ax.axvspan(
-            single.loc[single["horizon_h"] == h_lo, "target_time"].values[0],
-            single.loc[single["horizon_h"] == h_hi, "target_time"].values[0],
-            alpha=0.08, color=color, label=f"Day {day}"
-        )
-    ax.plot(single["target_time"], single[TARGET_COL],
-            color="black", linewidth=1.5, label="Actual")
-    ax.plot(single["target_time"], single["predicted"],
-            color="steelblue", linewidth=1.5, linestyle="--", label="Predicted")
-    ax.set_ylabel("EUR/MWh")
-    ax.set_xlabel("Target time")
-    ax.set_title(f"Full 120h forecast  --  issued at {issue.strftime('%Y-%m-%d %H:%M')}")
-    ax.xaxis.set_major_formatter(mdates.DateFormatter("%b %d\n%H:%M"))
-    ax.xaxis.set_major_locator(mdates.HourLocator(interval=12))
-    ax.legend(ncol=7, fontsize=8)
-    fig.autofmt_xdate(rotation=0, ha="center")
-    fig.tight_layout()
-    fig.savefig(out / "fig6_single_forecast.png", dpi=150)
-    plt.close(fig)
-    print("  fig6 saved")
 
 
 def plot_lime(final_models: dict, df: pd.DataFrame, preds_df: pd.DataFrame, out: Path) -> None:
@@ -343,11 +258,8 @@ def main():
 
     print("\nGenerating plots...")
     plot_wf_mae(metrics_df, OUTPUT_DIR)
-    plot_actual_vs_predicted(preds_df, OUTPUT_DIR)
-    plot_mae_by_horizon(preds_df, OUTPUT_DIR)
     plot_feature_importance(final_models, OUTPUT_DIR)
     plot_error_distribution(preds_df, OUTPUT_DIR)
-    plot_single_forecast(preds_df, OUTPUT_DIR)
     plot_lime(final_models, df, preds_df, OUTPUT_DIR)
     plot_shap(final_models, df, OUTPUT_DIR)
 
