@@ -20,9 +20,11 @@ from pathlib import Path
 from typing import Any
 
 import requests
+import pandas as pd
 
 DAYAHEAD_URL = "https://api.energidataservice.dk/dataset/DayAheadPrices"
 ELSPOT_URL = "https://api.energidataservice.dk/dataset/Elspotprices"
+DEFAULT_CSV = Path("data/day_ahead_prices_dk1_raw.csv")
 
 DAYAHEAD_COLUMNS = [
     "TimeUTC",
@@ -217,6 +219,53 @@ def _safe_float(value: Any) -> float:
     if isinstance(value, str):
         value = value.replace(",", ".")
     return float(value)
+
+
+def fetch_day_ahead_prices(
+    start: str,
+    end: str,
+    price_area: str = "DK1",
+    csv_path: str | Path | None = None,
+) -> pd.DataFrame:
+    """Fetch, merge, deduplicate, save, and return hourly day-ahead prices."""
+    if csv_path is None:
+        csv_path = Path("data") / f"day_ahead_prices_{price_area.lower()}_raw.csv"
+    output_path = Path(csv_path)
+
+    elspot_raw = fetch_records_from_url(
+        ELSPOT_URL,
+        start=start,
+        end=end,
+        price_area=[price_area],
+        sort="HourUTC desc,PriceArea",
+        columns=ELSPOT_COLUMNS,
+    )
+    dayahead_raw = fetch_records_from_url(
+        DAYAHEAD_URL,
+        start=start,
+        end=end,
+        price_area=[price_area],
+        sort="TimeUTC desc,PriceArea",
+        columns=DAYAHEAD_COLUMNS,
+    )
+
+    merged = (
+        [normalize_elspot_record(r) for r in elspot_raw]
+        + [normalize_dayahead_record(r) for r in dayahead_raw]
+    )
+    merged = deduplicate_records(merged)
+    write_csv(merged, output_path)
+
+    df = pd.DataFrame(merged)
+    for col in ("TimeUTC", "TimeDK"):
+        if col in df.columns:
+            df[col] = pd.to_datetime(df[col], errors="coerce")
+
+    print(
+        f"Fetched {len(elspot_raw):,} Elspot row(s), "
+        f"{len(dayahead_raw):,} DayAhead row(s); saved {len(df):,} row(s) to {output_path}"
+    )
+    return df
 
 
 def print_summary(records: list[dict[str, Any]]) -> None:

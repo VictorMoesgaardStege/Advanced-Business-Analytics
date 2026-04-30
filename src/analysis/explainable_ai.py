@@ -1,26 +1,37 @@
 """
 explainable_ai.py  -  XAI plots for the DK1 XGBoost price forecasting model
 =============================================================================
-Loads saved model outputs and generates all explainability figures.
+Notebook-callable functions for all explainability figures.
+When called without `out`, each function displays the plot inline (plt.show()).
+Pass out=Path("outputs/model") to save to PNG files instead.
 
 Requires outputs from src/models/XG_Boost_full_Res.py:
   outputs/model/predictions.parquet
   outputs/model/metrics.csv
   outputs/model/final_day_models.joblib
 
-Outputs (outputs/model/):
-  fig1_walk_forward_mae.png
-  fig2_actual_vs_predicted.png
-  fig3_mae_by_horizon.png
-  fig4_feature_importance.png
-  fig5_error_distribution.png
-  fig6_single_forecast.png
-  fig7_lime.png
-  fig8_weather_error_distributions.png
-  fig9_shap_bar.png
-  fig10_shap_beeswarm_day1-5.png
+Quick start (notebook)
+----------------------
+    import joblib, pandas as pd
+    from src.analysis.explainable_ai import (
+        plot_wf_mae, plot_feature_importance, plot_error_distribution,
+        plot_lime, plot_shap, export_shap_for_dashboard,
+    )
+    from src.models.XG_Boost_full_Res import OUTPUT_DIR, prepare_dataset
 
-Run:   python src/analysis/explainable_ai.py
+    preds_df     = pd.read_parquet(OUTPUT_DIR / "predictions.parquet")
+    metrics_df   = pd.read_csv(OUTPUT_DIR / "metrics.csv")
+    final_models = joblib.load(OUTPUT_DIR / "final_day_models.joblib")
+    df           = prepare_dataset()
+
+    plot_wf_mae(metrics_df)
+    plot_feature_importance(final_models)
+    plot_error_distribution(preds_df)
+    plot_lime(final_models, df, preds_df)
+    plot_shap(final_models, df)
+
+Run (CLI, saves all PNGs):
+    python src/analysis/explainable_ai.py
 """
 
 import sys
@@ -40,11 +51,22 @@ from src.models.XG_Boost_full_Res import (
     prepare_dataset,
 )
 
-EUR_DKK = 7.46  # fixed conversion rate; model outputs EUR/MWh → DKK/MWh
+EUR_DKK = 7.46  # model outputs EUR/MWh; multiply for DKK/MWh
+
 
 # ── Plots ──────────────────────────────────────────────────────────────────────
 
-def plot_wf_mae(metrics_df: pd.DataFrame, out: Path) -> None:
+def plot_wf_mae(
+    metrics_df: pd.DataFrame,
+    out: Path | None = None,
+) -> None:
+    """Fig 1 — Walk-forward MAE per day model across folds.
+
+    Parameters
+    ----------
+    metrics_df : metrics.csv loaded as DataFrame
+    out        : directory to save fig1_walk_forward_mae.png; None = plt.show()
+    """
     fig, ax = plt.subplots(figsize=(10, 4))
     for day, color in zip(range(1, 6), COLORS):
         col = f"day{day}_mae"
@@ -57,13 +79,25 @@ def plot_wf_mae(metrics_df: pd.DataFrame, out: Path) -> None:
     ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m-%d"))
     fig.autofmt_xdate()
     fig.tight_layout()
-    fig.savefig(out / "fig1_walk_forward_mae.png", dpi=150)
-    plt.close(fig)
-    print("  fig1 saved")
+    if out is not None:
+        fig.savefig(out / "fig1_walk_forward_mae.png", dpi=150)
+        plt.close(fig)
+        print("  fig1 saved")
+    else:
+        plt.show()
 
 
+def plot_feature_importance(
+    final_models: dict,
+    out: Path | None = None,
+) -> None:
+    """Fig 4 — Top-12 XGBoost feature importances per day model.
 
-def plot_feature_importance(final_models: dict, out: Path) -> None:
+    Parameters
+    ----------
+    final_models : dict {day: XGBRegressor} loaded from final_day_models.joblib
+    out          : directory to save fig4_feature_importance.png; None = plt.show()
+    """
     fig, axes = plt.subplots(1, 5, figsize=(22, 5))
     for ax, (day, model), color in zip(axes, final_models.items(), COLORS):
         imp = (
@@ -77,12 +111,25 @@ def plot_feature_importance(final_models: dict, out: Path) -> None:
         ax.set_xlabel("Importance")
     fig.suptitle("Feature importance  --  top 12 per day model", fontsize=12)
     fig.tight_layout()
-    fig.savefig(out / "fig4_feature_importance.png", dpi=150)
-    plt.close(fig)
-    print("  fig4 saved")
+    if out is not None:
+        fig.savefig(out / "fig4_feature_importance.png", dpi=150)
+        plt.close(fig)
+        print("  fig4 saved")
+    else:
+        plt.show()
 
 
-def plot_error_distribution(preds_df: pd.DataFrame, out: Path) -> None:
+def plot_error_distribution(
+    preds_df: pd.DataFrame,
+    out: Path | None = None,
+) -> None:
+    """Fig 5 — Prediction error histograms per day model (all folds).
+
+    Parameters
+    ----------
+    preds_df : predictions.parquet loaded as DataFrame
+    out      : directory to save fig5_error_distribution.png; None = plt.show()
+    """
     fig, axes = plt.subplots(1, 5, figsize=(18, 4))
     for ax, (day, (h_lo, h_hi)), color in zip(axes, DAY_GROUPS.items(), COLORS):
         sub    = preds_df[preds_df["horizon_h"].between(h_lo, h_hi)]
@@ -94,15 +141,37 @@ def plot_error_distribution(preds_df: pd.DataFrame, out: Path) -> None:
     axes[0].set_ylabel("Count")
     fig.suptitle("Prediction error distributions  --  all folds", fontsize=12)
     fig.tight_layout()
-    fig.savefig(out / "fig5_error_distribution.png", dpi=150)
-    plt.close(fig)
-    print("  fig5 saved")
+    if out is not None:
+        fig.savefig(out / "fig5_error_distribution.png", dpi=150)
+        plt.close(fig)
+        print("  fig5 saved")
+    else:
+        plt.show()
 
 
+def plot_lime(
+    final_models: dict,
+    df: pd.DataFrame,
+    preds_df: pd.DataFrame,
+    out: Path | None = None,
+    issue_time: str | pd.Timestamp | None = None,
+) -> None:
+    """Fig 7 — LIME local explanations for one forecast issue time.
 
-def plot_lime(final_models: dict, df: pd.DataFrame, preds_df: pd.DataFrame, out: Path) -> None:
-    last_fold = preds_df["fold"].max()
-    issue     = preds_df[preds_df["fold"] == last_fold]["issue_time"].max()
+    Parameters
+    ----------
+    final_models : dict {day: XGBRegressor}
+    df           : full dataset from prepare_dataset()
+    preds_df     : predictions.parquet loaded as DataFrame
+    out          : directory to save fig7_lime.png; None = plt.show()
+    issue_time   : which issue time to explain (default: latest in last fold)
+    """
+    if issue_time is not None:
+        issue = pd.Timestamp(issue_time)
+    else:
+        last_fold = preds_df["fold"].max()
+        issue     = preds_df[preds_df["fold"] == last_fold]["issue_time"].max()
+
     midpoints = {1: 12, 2: 36, 3: 60, 4: 84, 5: 108}
 
     fig, axes = plt.subplots(1, 5, figsize=(24, 5))
@@ -128,8 +197,8 @@ def plot_lime(final_models: dict, df: pd.DataFrame, preds_df: pd.DataFrame, out:
         pred_val   = model.predict(instance[FEATURES])[0]
 
         exp = explainer.explain_instance(
-            data_row   = X_instance,
-            predict_fn = model.predict,
+            data_row     = X_instance,
+            predict_fn   = model.predict,
             num_features = 10,
         )
 
@@ -140,32 +209,47 @@ def plot_lime(final_models: dict, df: pd.DataFrame, preds_df: pd.DataFrame, out:
         ax.set_title(
             f"Day {day}  (h={h_mid})\n"
             f"Actual={actual_val:.1f}  Pred={pred_val:.1f} EUR/MWh",
-            fontsize=9
+            fontsize=9,
         )
         ax.tick_params(axis="y", labelsize=7)
         ax.set_xlabel("Contribution (EUR/MWh)", fontsize=8)
 
     fig.suptitle(
         f"LIME explanations  --  issued at {issue.strftime('%Y-%m-%d %H:%M')}",
-        fontsize=12
+        fontsize=12,
     )
     fig.tight_layout()
-    fig.savefig(out / "fig7_lime.png", dpi=150)
-    plt.close(fig)
-    print("  fig7 saved")
+    if out is not None:
+        fig.savefig(out / "fig7_lime.png", dpi=150)
+        plt.close(fig)
+        print("  fig7 saved")
+    else:
+        plt.show()
 
 
+def plot_shap(
+    final_models: dict,
+    df: pd.DataFrame,
+    out: Path | None = None,
+    sample_n: int = 1500,
+) -> None:
+    """Fig 9 + Fig 10 — SHAP bar and beeswarm plots for all day models.
 
-def plot_shap(final_models: dict, df: pd.DataFrame, out: Path) -> None:
+    Parameters
+    ----------
+    final_models : dict {day: XGBRegressor}
+    df           : full dataset from prepare_dataset()
+    out          : directory to save fig9/fig10 PNGs; None = plt.show()
+    sample_n     : number of rows to sample per day model (default: 1500)
+    """
     import shap
-    SAMPLE_N = 1500
 
     # fig9: mean |SHAP| bar charts
     fig, axes = plt.subplots(1, 5, figsize=(22, 5))
     for ax, (day, (h_lo, h_hi)), color in zip(axes, DAY_GROUPS.items(), COLORS):
         model  = final_models[day]
         mask   = df["horizon_h"].between(h_lo, h_hi)
-        X_samp = df.loc[mask, FEATURES].sample(min(SAMPLE_N, mask.sum()), random_state=42)
+        X_samp = df.loc[mask, FEATURES].sample(min(sample_n, mask.sum()), random_state=42)
 
         explainer   = shap.TreeExplainer(model)
         shap_vals   = explainer.shap_values(X_samp) * EUR_DKK
@@ -183,19 +267,22 @@ def plot_shap(final_models: dict, df: pd.DataFrame, out: Path) -> None:
     fig.suptitle(
         "SHAP feature importance  --  colour = direction of mean effect  "
         "(solid = increases price / grey = decreases price)",
-        fontsize=10
+        fontsize=10,
     )
     fig.tight_layout()
-    fig.savefig(out / "fig9_shap_bar.png", dpi=150)
-    plt.close(fig)
-    print("  fig9 saved")
+    if out is not None:
+        fig.savefig(out / "fig9_shap_bar.png", dpi=150)
+        plt.close(fig)
+        print("  fig9 saved")
+    else:
+        plt.show()
 
     # fig10: all 5 beeswarm plots in one figure
     fig10, axes10 = plt.subplots(1, 5, figsize=(40, 8))
     for ax, (day, (h_lo, h_hi)) in zip(axes10, DAY_GROUPS.items()):
         model  = final_models[day]
         mask   = df["horizon_h"].between(h_lo, h_hi)
-        X_samp = df.loc[mask, FEATURES].sample(min(SAMPLE_N, mask.sum()), random_state=42)
+        X_samp = df.loc[mask, FEATURES].sample(min(sample_n, mask.sum()), random_state=42)
 
         explainer = shap.TreeExplainer(model)
         shap_expl = explainer(X_samp)
@@ -213,13 +300,27 @@ def plot_shap(final_models: dict, df: pd.DataFrame, out: Path) -> None:
 
     fig10.suptitle("SHAP beeswarm  --  all day models", fontsize=13, y=1.01)
     fig10.tight_layout()
-    fig10.savefig(out / "fig10_shap_beeswarm.png", dpi=150, bbox_inches="tight")
-    plt.close(fig10)
-    print("  fig10 saved")
+    if out is not None:
+        fig10.savefig(out / "fig10_shap_beeswarm.png", dpi=150, bbox_inches="tight")
+        plt.close(fig10)
+        print("  fig10 saved")
+    else:
+        plt.show()
 
 
-def export_shap_for_dashboard(final_models: dict, df: pd.DataFrame, out: Path) -> None:
-    """Export SHAP values for Day 1 to parquet — consumed by the Streamlit dashboard."""
+def export_shap_for_dashboard(
+    final_models: dict,
+    df: pd.DataFrame,
+    out: Path = OUTPUT_DIR,
+) -> None:
+    """Export SHAP values for Day 1 to parquet — consumed by the Streamlit dashboard.
+
+    Parameters
+    ----------
+    final_models : dict {day: XGBRegressor}
+    df           : full dataset from prepare_dataset()
+    out          : directory to write shap_day1_*.parquet (default: OUTPUT_DIR)
+    """
     import shap as _shap
     mask_d1 = df["horizon_h"].between(1, 24)
     X_d1 = (
@@ -227,8 +328,8 @@ def export_shap_for_dashboard(final_models: dict, df: pd.DataFrame, out: Path) -
         .sample(min(500, mask_d1.sum()), random_state=42)
         .reset_index(drop=True)
     )
-    explainer  = _shap.TreeExplainer(final_models[1])
-    shap_vals  = explainer.shap_values(X_d1)
+    explainer = _shap.TreeExplainer(final_models[1])
+    shap_vals = explainer.shap_values(X_d1)
     pd.DataFrame(shap_vals, columns=FEATURES).to_parquet(
         out / "shap_day1_values.parquet", index=False
     )
@@ -236,7 +337,7 @@ def export_shap_for_dashboard(final_models: dict, df: pd.DataFrame, out: Path) -
     print(f"  SHAP dashboard data saved -> {out}/shap_day1_*.parquet")
 
 
-# ── Main ───────────────────────────────────────────────────────────────────────
+# ── Main (CLI — saves all PNGs) ────────────────────────────────────────────────
 
 def main():
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -257,14 +358,14 @@ def main():
     df = prepare_dataset()
 
     print("\nGenerating plots...")
-    plot_wf_mae(metrics_df, OUTPUT_DIR)
-    plot_feature_importance(final_models, OUTPUT_DIR)
-    plot_error_distribution(preds_df, OUTPUT_DIR)
-    plot_lime(final_models, df, preds_df, OUTPUT_DIR)
-    plot_shap(final_models, df, OUTPUT_DIR)
+    plot_wf_mae(metrics_df, out=OUTPUT_DIR)
+    plot_feature_importance(final_models, out=OUTPUT_DIR)
+    plot_error_distribution(preds_df, out=OUTPUT_DIR)
+    plot_lime(final_models, df, preds_df, out=OUTPUT_DIR)
+    plot_shap(final_models, df, out=OUTPUT_DIR)
 
     print("\nExporting SHAP data for dashboard...")
-    export_shap_for_dashboard(final_models, df, OUTPUT_DIR)
+    export_shap_for_dashboard(final_models, df, out=OUTPUT_DIR)
 
     print(f"\nAll plots and exports saved to {OUTPUT_DIR}/")
 

@@ -167,6 +167,26 @@ def write_csv(records: list[dict[str, Any]], output_path: Path) -> None:
         writer.writerows(records)
 
 
+def fetch_weather_actuals(
+    start: str,
+    end: str,
+    csv_path: str | Path = DEFAULT_CSV,
+    *,
+    model: str = DEFAULT_MODEL,
+) -> pd.DataFrame:
+    """Fetch historical weather actuals, save them as CSV, and return a DataFrame."""
+    records = fetch_records(start=start, end=end, model=model)
+    output_path = Path(csv_path)
+    write_csv(records, output_path)
+
+    df = pd.DataFrame(records)
+    if "TimeDK" in df.columns:
+        df["TimeDK"] = pd.to_datetime(df["TimeDK"], errors="coerce")
+
+    print(f"Saved {len(df):,} row(s) to {output_path}")
+    return df
+
+
 def print_summary(records: list[dict[str, Any]]) -> None:
     print(f"Fetched {len(records)} record(s).")
     if not records:
