@@ -7,7 +7,7 @@ a DataFrame.
 
 Quick start
 -----------
-    from data_collection import (
+    from src.data.data_collection import (
         fetch_weather_actuals,
         fetch_weather_forecasts,
         fetch_consumption,
@@ -200,103 +200,6 @@ def fetch_day_ahead_prices(
     print(f"  {len(merged):,} merged rows saved -> {csv_path}")
 
     df = pd.DataFrame(merged)
-    for col in ("TimeUTC", "TimeDK"):
-        if col in df.columns:
-            df[col] = pd.to_datetime(df[col], errors="coerce")
-    return df
-
-
-# ── Private heating consumption ────────────────────────────────────────────────
-
-def fetch_private_heating_national(
-    start: str,
-    end: str,
-    csv_path: str | Path = DATA_DIR / "private_consumption_heating_national_raw.csv",
-    heating_category: list[str] | None = None,
-    housing_category: list[str] | None = None,
-) -> pd.DataFrame:
-    """Fetch national-level private heating consumption (PrivateConsumptionHeatingNationalHour).
-
-    Parameters
-    ----------
-    start            : str  e.g. "2021-01-01"
-    end              : str  e.g. "2026-04-28"
-    csv_path         : output path
-    heating_category : optional filter, e.g. ["Elvarme eller varmepumpe"]
-    housing_category : optional filter, e.g. ["Etageejendom"]
-
-    Returns
-    -------
-    pd.DataFrame with columns TimeUTC, TimeDK, HousingCategory,
-                 HeatingCategory, ConsumptionkWh.
-    """
-    from src.data.fetch_private_consumption_heating_data import fetch_records, write_csv
-
-    csv_path = Path(csv_path)
-    extra_filters: dict = {}
-    if heating_category:
-        extra_filters["HeatingCategory"] = heating_category
-    if housing_category:
-        extra_filters["HousingCategory"] = housing_category
-
-    print(f"[fetch_private_heating_national] {start} -> {end}")
-    records = fetch_records(
-        dataset="national", start=start, end=end,
-        extra_filters=extra_filters or None,
-    )
-    write_csv(records, csv_path)
-    print(f"  {len(records):,} rows saved -> {csv_path}")
-
-    df = pd.DataFrame(records)
-    for col in ("TimeUTC", "TimeDK"):
-        if col in df.columns:
-            df[col] = pd.to_datetime(df[col], errors="coerce")
-    return df
-
-
-def fetch_private_heating_municipal(
-    start: str,
-    end: str,
-    csv_path: str | Path = DATA_DIR / "private_consumption_heating_municipal_raw.csv",
-    heating_category: list[str] | None = None,
-    housing_category: list[str] | None = None,
-) -> pd.DataFrame:
-    """Fetch municipality-level private heating consumption (PrivateConsumptionHeatingHour).
-
-    This dataset is large (~29M rows total). Use date filters to keep
-    downloads manageable — a single year is ~3-4M rows.
-
-    Parameters
-    ----------
-    start            : str  e.g. "2024-01-01"
-    end              : str  e.g. "2026-04-28"
-    csv_path         : output path
-    heating_category : optional filter, e.g. ["Elvarme eller varmepumpe"]
-    housing_category : optional filter, e.g. ["Etageejendom"]
-
-    Returns
-    -------
-    pd.DataFrame with columns TimeUTC, TimeDK, MunicipalityCode, Municipality,
-                 RegionName, HousingCategory, HeatingCategory, ConsumptionkWh.
-    """
-    from src.data.fetch_private_consumption_heating_data import fetch_records, write_csv
-
-    csv_path = Path(csv_path)
-    extra_filters: dict = {}
-    if heating_category:
-        extra_filters["HeatingCategory"] = heating_category
-    if housing_category:
-        extra_filters["HousingCategory"] = housing_category
-
-    print(f"[fetch_private_heating_municipal] {start} -> {end}")
-    records = fetch_records(
-        dataset="municipal", start=start, end=end,
-        extra_filters=extra_filters or None,
-    )
-    write_csv(records, csv_path)
-    print(f"  {len(records):,} rows saved -> {csv_path}")
-
-    df = pd.DataFrame(records)
     for col in ("TimeUTC", "TimeDK"):
         if col in df.columns:
             df[col] = pd.to_datetime(df[col], errors="coerce")
