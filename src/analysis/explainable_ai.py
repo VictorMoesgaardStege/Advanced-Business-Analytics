@@ -16,6 +16,8 @@ Quick start (notebook)
     from src.analysis.explainable_ai import (
         plot_wf_mae, plot_feature_importance, plot_error_distribution,
         plot_lime, plot_shap, export_shap_for_dashboard,
+        make_xai_forecast_summary, make_dashboard_shap_summary,
+        display_xai_artifacts,
     )
     from src.models.XG_Boost_full_Res import OUTPUT_DIR, prepare_dataset
 
@@ -54,6 +56,126 @@ from src.models.XG_Boost_full_Res import (
 EUR_DKK = 7.46  # model outputs EUR/MWh; multiply for DKK/MWh
 
 
+# -- Notebook helpers -----------------------------------------------------------
+
+def make_xai_forecast_summary(
+    metrics_df: pd.DataFrame,
+    preds_df: pd.DataFrame,
+    eur_dkk: float = EUR_DKK,
+) -> pd.DataFrame:
+    """Return a compact day-level forecast summary for the notebook storyline.
+
+    The model is trained as five separate day models, so the summary keeps the
+    same structure: one row per model/day. MAE is reported both in the native
+    model unit (EUR/MWh) and in the user-facing dashboard unit (DKK/kWh).
+    """
+    rows = []
+
+    for day, (h_lo, h_hi) in DAY_GROUPS.items():
+        sub = preds_df[preds_df["horizon_h"].between(h_lo, h_hi)].copy()
+        sub = sub.dropna(subset=["predicted", TARGET_COL])
+        errors = sub["predicted"] - sub[TARGET_COL]
+
+        metric_col = f"day{day}_mae"
+        mean_mae = (
+            metrics_df[metric_col].mean()
+            if metric_col in metrics_df
+            else errors.abs().mean()
+        )
+
+        rows.append(
+            {
+                "day_model": f"Day {day}",
+                "horizon_hours": f"{h_lo}-{h_hi}",
+                "mean_walk_forward_mae_eur_mwh": mean_mae,
+                "mean_walk_forward_mae_dkk_kwh": mean_mae * eur_dkk / 1000,
+                "out_of_sample_bias_eur_mwh": errors.mean(),
+                "n_predictions": int(len(sub)),
+            }
+        )
+
+    return pd.DataFrame(rows)
+
+
+def make_dashboard_shap_summary(
+    out: Path = OUTPUT_DIR,
+    top_n: int = 8,
+    eur_dkk: float = EUR_DKK,
+) -> pd.DataFrame:
+    """Summarise the precomputed Day 1 SHAP export used by the dashboard."""
+    out = Path(out)
+    shap_path = out / "shap_day1_values.parquet"
+    feature_path = out / "shap_day1_features.parquet"
+
+    if not shap_path.exists() or not feature_path.exists():
+        raise FileNotFoundError(
+            "Missing SHAP dashboard files. Run export_shap_for_dashboard(...) "
+            "or `python src/analysis/explainable_ai.py` first."
+        )
+
+    shap_values = pd.read_parquet(shap_path)
+    feature_values = pd.read_parquet(feature_path)
+
+    top_features = shap_values.abs().mean().sort_values(ascending=False).head(top_n)
+    summary = pd.DataFrame(
+        {
+            "feature": top_features.index,
+            "mean_abs_shap_dkk_kwh": top_features.values * eur_dkk / 1000,
+            "mean_signed_shap_dkk_kwh": (
+                shap_values[top_features.index].mean().values * eur_dkk / 1000
+            ),
+            "sample_mean_feature_value": feature_values[top_features.index].mean().values,
+        }
+    )
+    return summary
+
+
+def display_xai_artifacts(
+    filenames: list[str] | tuple[str, ...] | None = None,
+    out: Path = OUTPUT_DIR,
+    width: int | None = None,
+) -> None:
+    """Display saved XAI PNG artifacts in a notebook without recomputing them."""
+    from IPython.display import Image, display
+
+    out = Path(out)
+    if filenames is None:
+        filenames = (
+            "fig4_feature_importance.png",
+            "fig7_lime.png",
+            "fig9_shap_bar.png",
+            "fig10_shap_beeswarm.png",
+        )
+
+    for filename in filenames:
+        path = out / filename
+        if not path.exists():
+            raise FileNotFoundError(
+                f"Missing {path}. Run `python src/analysis/explainable_ai.py` first."
+            )
+        display(Image(filename=str(path), width=width))
+
+
+def plot_shap_explanations(
+    out: Path = OUTPUT_DIR,
+    width: int | None = None,
+) -> None:
+    """Notebook wrapper for the saved SHAP bar and beeswarm figures."""
+    display_xai_artifacts(
+        ("fig9_shap_bar.png", "fig10_shap_beeswarm.png"),
+        out=out,
+        width=width,
+    )
+
+
+def plot_lime_explanations(
+    out: Path = OUTPUT_DIR,
+    width: int | None = None,
+) -> None:
+    """Notebook wrapper for the saved LIME local explanation figure."""
+    display_xai_artifacts(("fig7_lime.png",), out=out, width=width)
+
+
 # ── Plots ──────────────────────────────────────────────────────────────────────
 
 def plot_wf_mae(
@@ -68,10 +190,11 @@ def plot_wf_mae(
     out        : directory to save fig1_walk_forward_mae.png; None = plt.show()
     """
     fig, ax = plt.subplots(figsize=(10, 4))
+    fold_end = pd.to_datetime(metrics_df["fold_end"])
     for day, color in zip(range(1, 6), COLORS):
         col = f"day{day}_mae"
         if col in metrics_df:
-            ax.plot(metrics_df["fold_end"], metrics_df[col],
+            ax.plot(fold_end, metrics_df[col],
                     marker="o", label=f"Day {day} (h{(day-1)*24+1}-{day*24})", color=color)
     ax.set(xlabel="Training end", ylabel="MAE (EUR/MWh)",
            title="Walk-forward MAE by day model")
