@@ -240,47 +240,6 @@ def plot_lime(final_models: dict, df: pd.DataFrame, preds_df: pd.DataFrame, out:
     print("  fig7 saved")
 
 
-def plot_weather_error_distributions(out: Path) -> None:
-    err = pd.read_csv(DATA_DIR / "weather_error_distributions.csv")
-
-    variables = err["forecast_variable"].unique()
-    n         = len(variables)
-    ncols     = 4
-    nrows     = int(np.ceil(n / ncols))
-
-    fig, axes = plt.subplots(nrows, ncols, figsize=(18, nrows * 3.5))
-    axes      = axes.flatten()
-
-    for ax, var in zip(axes, variables):
-        sub = err[err["forecast_variable"] == var].sort_values("horizon_hours")
-        h   = sub["horizon_hours"].values
-
-        ax.fill_between(h, sub["p05_error"], sub["p95_error"],
-                        alpha=0.15, color="steelblue", label="p05-p95")
-        ax.fill_between(h, sub["p25_error"], sub["p75_error"],
-                        alpha=0.35, color="steelblue", label="p25-p75")
-        ax.plot(h, sub["mean_error"], color="steelblue",
-                linewidth=2, marker="o", markersize=4, label="Mean error")
-        ax.plot(h, sub["p50_error"], color="steelblue",
-                linewidth=1.5, linestyle="--", marker="o", markersize=3,
-                alpha=0.7, label="Median error")
-        ax.axhline(0, color="black", linewidth=0.8, linestyle=":")
-        ax.set_title(var, fontsize=10)
-        ax.set_xlabel("Horizon (h)")
-        ax.set_ylabel("Error")
-        ax.set_xticks(h)
-
-    for ax in axes[n:]:
-        ax.set_visible(False)
-
-    handles, labels = axes[0].get_legend_handles_labels()
-    fig.legend(handles, labels, loc="lower right", fontsize=9, ncol=2)
-    fig.suptitle("Weather forecast error distributions by horizon", fontsize=13)
-    fig.tight_layout()
-    fig.savefig(out / "fig8_weather_error_distributions.png", dpi=150)
-    plt.close(fig)
-    print("  fig8 saved")
-
 
 def plot_shap(final_models: dict, df: pd.DataFrame, out: Path) -> None:
     import shap
@@ -390,7 +349,6 @@ def main():
     plot_error_distribution(preds_df, OUTPUT_DIR)
     plot_single_forecast(preds_df, OUTPUT_DIR)
     plot_lime(final_models, df, preds_df, OUTPUT_DIR)
-    plot_weather_error_distributions(OUTPUT_DIR)
     plot_shap(final_models, df, OUTPUT_DIR)
 
     print("\nExporting SHAP data for dashboard...")
