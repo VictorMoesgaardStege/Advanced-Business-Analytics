@@ -2,14 +2,14 @@
 data_processing.py  —  Build the input dataset for the XGBoost model
 =============================================================
 Reads weather actuals and error distributions, simulates NWP-style
-forecasts by adding horizon-scaled Gaussian noise, and saves the
-result as forecast_dataset.parquet.
+forecasts by adding horizon-scaled Gaussian noise, joins prices and
+price lags, and saves the model-ready result as model_dataset.parquet.
 
 Quick start
 -----------
-    from src.data.data_processing import build_forecast_dataset
+    from src.data.data_processing import build_model_dataset
 
-    build_forecast_dataset()
+    build_model_dataset()
 
 Run from the repository root:
     python -m src.data.data_processing
@@ -59,6 +59,13 @@ VAR_BOUNDS = {
 
 WEATHER_VARS = list(FORECAST_VAR_MAP.keys())
 HORIZONS     = np.arange(1, FORECAST_HORIZON_HOURS + 1, dtype=int)
+TARGET_COL   = "DayAheadPriceEUR"
+PRICE_LAG_FEATURES = [
+    "price_lag_24h",
+    "price_lag_48h",
+    "price_lag_168h",
+    "price_rolling_24h_mean",
+]
 
 
 def _build_error_params(err_dist: pd.DataFrame) -> dict:
@@ -203,6 +210,36 @@ def build_forecast_dataset(
     return df
 
 
+def build_model_dataset(
+    forecast_dataset: str | Path = DATA_DIR / "forecast_dataset.parquet",
+    price_csv: str | Path = DATA_DIR / "day_ahead_prices_dk1_raw.csv",
+    output_path: str | Path = DATA_DIR / "model_dataset.parquet",
+    price_area: str = "DK1",
+) -> pd.DataFrame:
+    """Build the model-ready dataset with target prices and issue-time lags."""
+    forecast_dataset = Path(forecast_dataset)
+    output_path = Path(output_path)
+
+    print("[build_model_dataset] Loading forecast dataset...")
+    df = pd.read_parquet(forecast_dataset)
+    print(f"  Forecast rows: {len(df):,}")
+
+    print("[build_model_dataset] Loading hourly prices and adding price features...")
+    prices = load_hourly_prices(price_csv=price_csv, price_area=price_area)
+    df = add_price_target_and_lags(df, prices)
+
+    for suffix in ("10m", "100m"):
+        rad = np.deg2rad(df[f"fcst_wind_direction_{suffix}"])
+        df[f"fcst_wind_dir_{suffix}_sin"] = np.sin(rad)
+        df[f"fcst_wind_dir_{suffix}_cos"] = np.cos(rad)
+
+    df = df.sort_values(["issue_time", "horizon_h"]).reset_index(drop=True)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    df.to_parquet(output_path, index=False)
+    print(f"  {len(df):,} rows x {df.shape[1]} cols saved -> {output_path}")
+    return df
+
+
 WEATHER_PLOT_VARS = {
     "Wind 100m":   ("fcst_wind_speed_100m",    "actual_wind_speed_100m",    "m/s"),
     "Solar":       ("fcst_shortwave_radiation", "actual_shortwave_radiation", "W/m²"),
@@ -296,6 +333,7 @@ def plot_weather_forecast(
 
 
 # Dashboard-style weather plot
+
 
 def plot_weather_forecast_dashboard_style(
     dashboard_parquet: str | Path = DATA_DIR / "weather_dk1_dashboard.parquet",
@@ -425,6 +463,53 @@ def plot_weather_forecast_dashboard_style(
     return fig
 
 
+def load_hourly_prices(
+    price_csv: str | Path = DATA_DIR / "day_ahead_prices_dk1_raw.csv",
+    price_area: str = "DK1",
+    target_col: str = TARGET_COL,
+) -> pd.Series:
+    """Load hourly day-ahead prices used for targets and issue-time lags."""
+    raw = pd.read_csv(price_csv, parse_dates=["TimeDK"])
+    if "PriceArea" in raw.columns:
+        raw = raw[raw["PriceArea"].astype(str).eq(price_area)].copy()
+    raw[target_col] = pd.to_numeric(raw[target_col], errors="coerce")
+    return raw.set_index("TimeDK").sort_index()[target_col].resample("h").mean()
+
+
+def add_price_target_and_lags(
+    df: pd.DataFrame,
+    prices: pd.Series,
+    target_col: str = TARGET_COL,
+) -> pd.DataFrame:
+    """Add target prices and lag features known at each issue_time."""
+    out = df.copy()
+    out["issue_time"] = pd.to_datetime(out["issue_time"])
+    out["target_time"] = pd.to_datetime(out["target_time"])
+
+    price_df = (
+        prices.rename(target_col)
+        .reset_index()
+        .rename(columns={"TimeDK": "target_time"})
+    )
+    out = out.merge(price_df, on="target_time", how="inner")
+
+    price_map = prices.to_dict()
+    rows = {}
+    for issue_time in pd.to_datetime(out["issue_time"].unique()):
+        past_24 = [price_map.get(issue_time - pd.Timedelta(hours=h), np.nan) for h in range(1, 25)]
+        rows[issue_time] = {
+            "price_lag_24h": price_map.get(issue_time - pd.Timedelta(hours=24), np.nan),
+            "price_lag_48h": price_map.get(issue_time - pd.Timedelta(hours=48), np.nan),
+            "price_lag_168h": price_map.get(issue_time - pd.Timedelta(hours=168), np.nan),
+            "price_rolling_24h_mean": np.nanmean(past_24),
+        }
+
+    lag_df = pd.DataFrame.from_dict(rows, orient="index")
+    lag_df.index.name = "issue_time"
+    out = out.merge(lag_df.reset_index(), on="issue_time", how="left")
+    return out.dropna(subset=[target_col] + PRICE_LAG_FEATURES).reset_index(drop=True)
+
+
 VARIABLE_MAP = {
     "temperature_2m":      "temperature_2m",
     "pressure_msl":        "pressure_msl",
@@ -538,3 +623,4 @@ def build_error_distributions(
 if __name__ == "__main__":
     build_error_distributions()
     build_forecast_dataset()
+    build_model_dataset()

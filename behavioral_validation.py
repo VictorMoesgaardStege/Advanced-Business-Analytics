@@ -51,9 +51,11 @@ DAY_GROUPS = {
 
 WEATHER_FEATURES = [
     "fcst_wind_speed_10m",
-    "fcst_wind_direction_10m",
+    "fcst_wind_dir_10m_sin",
+    "fcst_wind_dir_10m_cos",
     "fcst_wind_speed_100m",
-    "fcst_wind_direction_100m",
+    "fcst_wind_dir_100m_sin",
+    "fcst_wind_dir_100m_cos",
     "fcst_shortwave_radiation",
     "fcst_cloud_cover",
     "fcst_temperature_2m",
@@ -101,55 +103,15 @@ COUNTERFACTUAL_STEP_FRACTION = 0.25
 ALE_BINS = 20
 
 
-def load_hourly_prices() -> pd.Series:
-    raw = (
-        pd.read_csv(DATA_DIR / "day_ahead_prices_dk1_raw.csv", parse_dates=["TimeDK"])
-        .set_index("TimeDK")
-        .sort_index()
-    )
-    return raw["DayAheadPriceEUR"].resample("h").mean()
-
-
-def build_price_lags(df: pd.DataFrame, prices: pd.Series) -> pd.DataFrame:
-    price_map = prices.to_dict()
-    unique_ts = pd.to_datetime(df["issue_time"].unique())
-
-    rows = {}
-    for ts in unique_ts:
-        past_24 = [price_map.get(ts - pd.Timedelta(hours=h), np.nan) for h in range(1, 25)]
-        rows[ts] = {
-            "price_lag_24h": price_map.get(ts - pd.Timedelta(hours=24), np.nan),
-            "price_lag_48h": price_map.get(ts - pd.Timedelta(hours=48), np.nan),
-            "price_lag_168h": price_map.get(ts - pd.Timedelta(hours=168), np.nan),
-            "price_rolling_24h_mean": np.nanmean(past_24),
-        }
-
-    lag_df = pd.DataFrame.from_dict(rows, orient="index")
-    lag_df.index.name = "issue_time"
-    return df.merge(lag_df.reset_index(), on="issue_time", how="left")
-
-
 def prepare_dataset() -> pd.DataFrame:
-    print("Loading forecast dataset...")
-    df = pd.read_parquet(DATA_DIR / "forecast_dataset.parquet")
+    print("Loading model-ready dataset...")
+    df = pd.read_parquet(DATA_DIR / "model_dataset.parquet")
     df = df[df["region"] == REGION].copy()
     print(f"  {len(df):,} rows | region={REGION}")
 
-    print("Loading hourly prices...")
-    prices = load_hourly_prices()
-
-    price_df = (
-        prices.rename(TARGET_COL)
-        .reset_index()
-        .rename(columns={"TimeDK": "target_time"})
-    )
-    df = df.merge(price_df, on="target_time", how="inner")
-
-    print("Building issue-time lag features...")
-    df = build_price_lags(df, prices)
-    df = df.dropna(subset=[TARGET_COL] + PRICE_LAG_FEATURES).reset_index(drop=True)
     df["issue_time"] = pd.to_datetime(df["issue_time"])
     df["target_time"] = pd.to_datetime(df["target_time"])
+    df = df.dropna(subset=[TARGET_COL] + FEATURES).reset_index(drop=True)
 
     print(f"  Ready for validation: {len(df):,} rows")
     return df.sort_values(["issue_time", "horizon_h"]).reset_index(drop=True)
