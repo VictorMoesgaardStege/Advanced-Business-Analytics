@@ -295,7 +295,135 @@ def plot_weather_forecast(
     plt.show()
 
 
-# ── CLI entry-point ────────────────────────────────────────────────────────────
+# Dashboard-style weather plot
+
+def plot_weather_forecast_dashboard_style(
+    dashboard_parquet: str | Path = DATA_DIR / "weather_dk1_dashboard.parquet",
+    issue_time: str | pd.Timestamp | None = None,
+    ctx_days: int = 7,
+    show_actuals: bool = True,
+):
+    """Plot DK1 weather actuals followed by the 5-day forecast window."""
+    from plotly.subplots import make_subplots
+    import plotly.graph_objects as go
+
+    df = pd.read_parquet(dashboard_parquet).copy()
+    df["issue_time"] = pd.to_datetime(df["issue_time"])
+    df["target_time"] = pd.to_datetime(df["target_time"])
+
+    available_issues = pd.to_datetime(df["issue_time"].dropna().unique())
+    if len(available_issues) == 0:
+        raise ValueError("No issue_time values found in weather dashboard data.")
+
+    if issue_time is None:
+        selected_issue = pd.Timestamp(max(available_issues))
+    else:
+        requested = pd.Timestamp(issue_time)
+        selected_issue = min(available_issues, key=lambda x: abs(x - requested))
+
+    hist_start = selected_issue - pd.Timedelta(days=ctx_days)
+    fcst_end = selected_issue + pd.Timedelta(days=5)
+
+    hist = (
+        df[(df["target_time"] >= hist_start) & (df["target_time"] < selected_issue)]
+        .groupby("target_time", as_index=False)
+        .first()
+        .sort_values("target_time")
+    )
+    fcst = (
+        df[
+            (df["issue_time"] == selected_issue)
+            & (df["target_time"] > selected_issue)
+            & (df["target_time"] <= fcst_end)
+        ]
+        .sort_values("target_time")
+    )
+
+    variables = {
+        "Wind 100m": ("fcst_wind_speed_100m", "actual_wind_speed_100m", "m/s", "#38bdf8"),
+        "Solar": ("fcst_shortwave_radiation", "actual_shortwave_radiation", "W/m2", "#fbbf24"),
+        "Temperature": ("fcst_temperature_2m", "actual_temperature_2m", "C", "#f87171"),
+    }
+
+    fig = make_subplots(
+        rows=len(variables),
+        cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.06,
+        subplot_titles=list(variables.keys()),
+    )
+
+    for row, (name, (fcst_col, actual_col, unit, color)) in enumerate(variables.items(), start=1):
+        fig.add_trace(
+            go.Scatter(
+                x=hist["target_time"],
+                y=hist[actual_col],
+                mode="lines",
+                line=dict(color=color, width=2),
+                name=f"{name} actual",
+                legendgroup=name,
+            ),
+            row=row,
+            col=1,
+        )
+
+        if not fcst.empty:
+            fig.add_trace(
+                go.Scatter(
+                    x=fcst["target_time"],
+                    y=fcst[fcst_col],
+                    mode="lines",
+                    line=dict(color=color, width=2, dash="dot"),
+                    name=f"{name} forecast",
+                    legendgroup=name,
+                ),
+                row=row,
+                col=1,
+            )
+
+            if show_actuals and fcst[actual_col].notna().any():
+                fig.add_trace(
+                    go.Scatter(
+                        x=fcst["target_time"],
+                        y=fcst[actual_col],
+                        mode="lines",
+                        line=dict(color="#4ade80", width=1.5, dash="dash"),
+                        name=f"{name} actual in forecast window",
+                        legendgroup=name,
+                    ),
+                    row=row,
+                    col=1,
+                )
+
+        fig.update_yaxes(title_text=unit, row=row, col=1)
+
+    if not fcst.empty:
+        for row in range(1, len(variables) + 1):
+            fig.add_vrect(
+                x0=fcst["target_time"].iloc[0],
+                x1=fcst["target_time"].iloc[-1],
+                fillcolor="rgba(167,139,250,0.10)",
+                line_width=0,
+                layer="below",
+                annotation_text="5-day forecast" if row == 1 else "",
+                annotation_position="top right",
+                row=row,
+                col=1,
+            )
+
+    fig.update_layout(
+        template="plotly_white",
+        height=760,
+        title=(
+            f"Weather - DK1 West - {ctx_days}d history + 5-day forecast "
+            f"(issued {selected_issue:%Y-%m-%d %H:%M})"
+        ),
+        legend=dict(orientation="h", y=-0.08, x=0.5, xanchor="center"),
+        margin=dict(l=40, r=20, t=70, b=90),
+    )
+    fig.show()
+    return fig
+
 
 VARIABLE_MAP = {
     "temperature_2m":      "temperature_2m",
