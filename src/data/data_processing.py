@@ -20,6 +20,8 @@ Direct script execution also works from the repository root:
 
 from __future__ import annotations
 
+import contextlib
+import io
 import sys
 from pathlib import Path
 
@@ -620,7 +622,25 @@ def build_error_distributions(
     print(f"  {len(error_df):,} raw error rows saved -> {errors_csv}")
 
 
+def main() -> None:
+    """Run the full processing step with a short notebook-friendly summary."""
+    with contextlib.redirect_stdout(io.StringIO()):
+        build_error_distributions()
+        build_forecast_dataset()
+        model_df = build_model_dataset()
+
+    forecast_raw = pd.read_csv(DATA_DIR / "weather_forecasts_raw.csv", parse_dates=["TimeDK"])
+    period_start = pd.to_datetime(model_df["target_time"]).min().strftime("%Y-%m-%d")
+    period_end = pd.to_datetime(model_df["target_time"]).max().strftime("%Y-%m-%d")
+    forecast_start = forecast_raw["TimeDK"].min().strftime("%Y-%m-%d")
+    forecast_end = forecast_raw["TimeDK"].max().strftime("%Y-%m-%d")
+
+    print(f"Data processing from {period_start} to {period_end} is done.")
+    print(
+        f"Actual weather forecasts from {forecast_start} to {forecast_end} "
+        "were used to estimate forecast errors and generate forecast-like weather inputs."
+    )
+
+
 if __name__ == "__main__":
-    build_error_distributions()
-    build_forecast_dataset()
-    build_model_dataset()
+    main()
