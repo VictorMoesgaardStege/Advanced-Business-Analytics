@@ -1,5 +1,6 @@
 from copy import deepcopy
 from pathlib import Path
+from typing import Optional
 
 import numpy as np
 import pandas as pd
@@ -474,6 +475,225 @@ def summarize_issue_time_run(
     }
 
 
+def build_daily_issue_times(
+    issue_catalog: pd.DataFrame,
+    issue_hour: int = 12,
+) -> pd.Series:
+    return (
+        issue_catalog.loc[issue_catalog["issue_time"].dt.hour == issue_hour, "issue_time"]
+        .sort_values()
+        .reset_index(drop=True)
+    )
+
+
+def select_simulation_issue_times(
+    issue_catalog: pd.DataFrame,
+    simulation_days: int = 90,
+    issue_hour: int = 12,
+    window_stride_days: Optional[int] = None,
+    forecast_horizon_hours: int = FORECAST_HORIZON_HOURS,
+) -> pd.Series:
+    if simulation_days <= 0:
+        raise ValueError("simulation_days must be positive.")
+
+    if window_stride_days is None:
+        window_stride_days = max(1, forecast_horizon_hours // 24)
+
+    if window_stride_days <= 0:
+        raise ValueError("window_stride_days must be positive.")
+
+    daily_issue_times = build_daily_issue_times(issue_catalog, issue_hour=issue_hour)
+    simulation_daily_issue_times = daily_issue_times.tail(simulation_days).reset_index(drop=True)
+
+    if simulation_daily_issue_times.empty:
+        raise ValueError("No issue times available for the requested simulation period.")
+
+    simulation_issue_times = simulation_daily_issue_times.iloc[::window_stride_days].reset_index(
+        drop=True
+    )
+
+    if simulation_issue_times.empty:
+        raise ValueError("No non-overlapping issue times selected for the simulation.")
+
+    return simulation_issue_times
+
+
+def simulate_issue_time_sequence(
+    issue_times: pd.Series,
+    preds: pd.DataFrame,
+    system_load: pd.DataFrame,
+    household_share_of_system: float = HOUSEHOLD_SHARE_OF_SYSTEM,
+    segment_assumptions: dict = SEGMENT_ASSUMPTIONS,
+    decision_weights: dict = DECISION_WEIGHTS,
+    historical_segment_capacity: Optional[pd.DataFrame] = None,
+) -> dict:
+    issue_times = pd.Series(issue_times).dropna().reset_index(drop=True)
+    if issue_times.empty:
+        raise ValueError("issue_times must contain at least one timestamp.")
+
+    if historical_segment_capacity is None:
+        historical_segment_capacity = build_historical_segment_capacity(
+            system_load=system_load,
+            segment_assumptions=segment_assumptions,
+            household_share_of_system=household_share_of_system,
+        )
+
+    scenario_profiles = []
+    scenario_shifts = []
+    total_shifted_energy_mwh = 0.0
+    total_shift_events = 0
+
+    for issue_time in issue_times:
+        window_df = assemble_window_for_issue_time(
+            issue_time=issue_time,
+            preds=preds,
+            system_load=system_load,
+            household_share_of_system=household_share_of_system,
+            segment_assumptions=segment_assumptions,
+        )
+        profile_df, shifts_df = build_shift_plan(
+            window_df=window_df,
+            segment_assumptions=segment_assumptions,
+            decision_weights=decision_weights,
+            historical_segment_capacity=historical_segment_capacity,
+        )
+        profile_df = profile_df.copy()
+        profile_df["issue_time"] = pd.Timestamp(issue_time)
+        scenario_profiles.append(profile_df)
+
+        if shifts_df.empty:
+            continue
+
+        shifts_df = shifts_df.copy()
+        shifts_df["issue_time"] = pd.Timestamp(issue_time)
+        scenario_shifts.append(shifts_df)
+        total_shifted_energy_mwh += float(shifts_df["shift_mwh"].sum())
+        total_shift_events += int(len(shifts_df))
+
+    simulation_profiles_df = (
+        pd.concat(scenario_profiles, ignore_index=True)
+        .sort_values("target_time")
+        .drop_duplicates(subset=["target_time"], keep="first")
+        .reset_index(drop=True)
+    )
+    simulation_profiles_df["net_shift_mwh"] = (
+        simulation_profiles_df["shifted_system_load_mwh"]
+        - simulation_profiles_df["system_load_mwh"]
+    )
+    simulation_profiles_df["household_impact_mwh"] = (
+        simulation_profiles_df["household_load_mwh"]
+        - simulation_profiles_df["shifted_household_load_mwh"]
+    )
+    simulation_profiles_df["hour"] = simulation_profiles_df["target_time"].dt.hour
+    simulation_profiles_df["day_of_week"] = simulation_profiles_df["target_time"].dt.day_name()
+
+    if scenario_shifts:
+        simulation_shifts_df = pd.concat(scenario_shifts, ignore_index=True)
+    else:
+        simulation_shifts_df = pd.DataFrame(
+            columns=[
+                "segment",
+                "origin_index",
+                "target_index",
+                "origin_time",
+                "target_time",
+                "wait_h",
+                "shift_mwh",
+                "origin_predicted_price",
+                "target_predicted_price",
+                "score_gain",
+                "chosen_rank",
+                "target_segment_capacity_mwh",
+                "available_room_before_allocation_mwh",
+                "projected_target_segment_load_mwh",
+                "remaining_origin_movable_mwh",
+                "issue_time",
+            ]
+        )
+
+    summary = pd.Series(
+        {
+            "simulation_windows": int(len(issue_times)),
+            "simulated_hours": int(len(simulation_profiles_df)),
+            "simulation_start": simulation_profiles_df["target_time"].min(),
+            "simulation_end": simulation_profiles_df["target_time"].max(),
+            "total_shift_events": total_shift_events,
+            "total_shifted_energy_mwh": total_shifted_energy_mwh,
+            "avg_abs_household_impact_mwh": float(
+                simulation_profiles_df["household_impact_mwh"].abs().mean()
+            ),
+            "realized_household_savings_eur": float(
+                simulation_profiles_df["baseline_household_cost_eur"].sum()
+                - simulation_profiles_df["shifted_household_cost_eur"].sum()
+            ),
+        }
+    )
+
+    return {
+        "issue_times": issue_times,
+        "profiles": simulation_profiles_df,
+        "shifts": simulation_shifts_df,
+        "summary": summary,
+        "historical_segment_capacity": historical_segment_capacity,
+    }
+
+
+def run_rolling_impact_simulation(
+    simulation_days: int = 90,
+    issue_hour: int = 12,
+    window_stride_days: Optional[int] = None,
+    preds: Optional[pd.DataFrame] = None,
+    system_load: Optional[pd.DataFrame] = None,
+    household_share_of_system: float = HOUSEHOLD_SHARE_OF_SYSTEM,
+    segment_assumptions: dict = SEGMENT_ASSUMPTIONS,
+    decision_weights: dict = DECISION_WEIGHTS,
+    forecast_horizon_hours: int = FORECAST_HORIZON_HOURS,
+) -> dict:
+    if preds is None:
+        preds = load_predictions()
+    if system_load is None:
+        system_load = load_system_load()
+
+    issue_catalog = build_issue_catalog(
+        preds=preds,
+        forecast_horizon_hours=forecast_horizon_hours,
+    )
+    simulation_issue_times = select_simulation_issue_times(
+        issue_catalog=issue_catalog,
+        simulation_days=simulation_days,
+        issue_hour=issue_hour,
+        window_stride_days=window_stride_days,
+        forecast_horizon_hours=forecast_horizon_hours,
+    )
+
+    result = simulate_issue_time_sequence(
+        issue_times=simulation_issue_times,
+        preds=preds,
+        system_load=system_load,
+        household_share_of_system=household_share_of_system,
+        segment_assumptions=segment_assumptions,
+        decision_weights=decision_weights,
+    )
+
+    if window_stride_days is None:
+        window_stride_days = max(1, forecast_horizon_hours // 24)
+
+    summary = result["summary"].copy()
+    summary["simulation_days"] = int(simulation_days)
+    summary["window_stride_days"] = int(window_stride_days)
+
+    result.update(
+        {
+            "preds": preds,
+            "system_load": system_load,
+            "issue_catalog": issue_catalog,
+            "daily_issue_times": build_daily_issue_times(issue_catalog, issue_hour=issue_hour),
+            "summary": summary,
+        }
+    )
+    return result
+
+
 def run_scenario(
     scenario_name: str,
     scenario_shares: dict,
@@ -585,13 +805,17 @@ __all__ = [
     "SEGMENT_COLORS",
     "assemble_window_for_issue_time",
     "build_actual_baseline_reference",
+    "build_daily_issue_times",
     "build_historical_segment_capacity",
     "build_issue_catalog",
     "build_segment_assumptions",
     "build_shift_plan",
     "load_predictions",
     "load_system_load",
+    "run_rolling_impact_simulation",
     "run_scenario",
+    "select_simulation_issue_times",
+    "simulate_issue_time_sequence",
     "summarize_actual_baseline",
     "summarize_issue_time_run",
 ]
