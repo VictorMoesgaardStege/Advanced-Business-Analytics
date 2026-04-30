@@ -175,7 +175,7 @@ def fetch_all(start: str, end: str, price_area: str = "DK1") -> dict[str, pd.Dat
     results["prices"]            = fetch_day_ahead_prices(start, end, price_area=price_area)
 
     print("\n" + "=" * 60)
-    print("fetch_all complete. Run data_processing.py next to build forecast_dataset.parquet.")
+    print("fetch_all complete. Run data_processing.py next to build model_dataset.parquet.")
     print("=" * 60)
     return results
 
