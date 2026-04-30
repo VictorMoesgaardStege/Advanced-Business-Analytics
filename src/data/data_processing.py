@@ -164,10 +164,13 @@ def build_forecast_dataset(
                     )
                     fcst_val = actual_val + noise
                     lo, hi = VAR_BOUNDS[var]
-                    if lo is not None:
-                        fcst_val = max(fcst_val, lo)
-                    if hi is not None:
-                        fcst_val = min(fcst_val, hi)
+                    if lo is not None and hi is not None and "wind_direction" in var:
+                        fcst_val = fcst_val % 360
+                    else:
+                        if lo is not None:
+                            fcst_val = max(fcst_val, lo)
+                        if hi is not None:
+                            fcst_val = min(fcst_val, hi)
                     rec[f"fcst_{var}"]   = round(fcst_val, 4)
                     rec[f"actual_{var}"] = actual_val
                 records.append(rec)
@@ -190,6 +193,98 @@ def build_forecast_dataset(
     print(f"  Dashboard file: {dash_path}  ({len(dash_df):,} rows)")
 
     return df
+
+
+WEATHER_PLOT_VARS = {
+    "Wind 100m":   ("fcst_wind_speed_100m",    "actual_wind_speed_100m",    "m/s"),
+    "Solar":       ("fcst_shortwave_radiation", "actual_shortwave_radiation", "W/m²"),
+    "Temperature": ("fcst_temperature_2m",      "actual_temperature_2m",      "°C"),
+}
+
+
+def plot_weather_error_distributions(
+    error_dist_csv: str | Path = DATA_DIR / "weather_error_distributions.csv",
+) -> None:
+    import matplotlib.pyplot as plt
+
+    err       = pd.read_csv(error_dist_csv)
+    variables = err["forecast_variable"].unique()
+    n         = len(variables)
+    ncols     = 4
+    nrows     = int(np.ceil(n / ncols))
+
+    fig, axes = plt.subplots(nrows, ncols, figsize=(18, nrows * 3.5))
+    axes      = axes.flatten()
+
+    for ax, var in zip(axes, variables):
+        sub = err[err["forecast_variable"] == var].sort_values("horizon_hours")
+        h   = sub["horizon_hours"].values
+        ax.fill_between(h, sub["p05_error"], sub["p95_error"], alpha=0.15, color="steelblue", label="p05-p95")
+        ax.fill_between(h, sub["p25_error"], sub["p75_error"], alpha=0.35, color="steelblue", label="p25-p75")
+        ax.plot(h, sub["mean_error"], color="steelblue", linewidth=2, marker="o", markersize=4, label="Mean error")
+        ax.plot(h, sub["p50_error"], color="steelblue", linewidth=1.5, linestyle="--", marker="o", markersize=3, alpha=0.7, label="Median error")
+        ax.axhline(0, color="black", linewidth=0.8, linestyle=":")
+        ax.set_title(var, fontsize=10)
+        ax.set_xlabel("Horizon (h)")
+        ax.set_ylabel("Error")
+        ax.set_xticks(h)
+
+    for ax in axes[n:]:
+        ax.set_visible(False)
+
+    handles, labels = axes[0].get_legend_handles_labels()
+    fig.legend(handles, labels, loc="lower right", fontsize=9, ncol=2)
+    fig.suptitle("Weather forecast error distributions by horizon", fontsize=13)
+    fig.tight_layout()
+    plt.show()
+
+
+def plot_weather_forecast(
+    dashboard_parquet: str | Path = DATA_DIR / "weather_dk1_dashboard.parquet",
+    ctx_days: int = 7,
+) -> None:
+    import matplotlib.pyplot as plt
+    import matplotlib.dates as mdates
+
+    df         = pd.read_parquet(dashboard_parquet)
+    issue_ts   = pd.to_datetime(df["issue_time"].max())
+    hist_start = issue_ts - pd.Timedelta(days=ctx_days)
+    fcst_end   = issue_ts + pd.Timedelta(days=5)
+
+    hist = (
+        df[(df["target_time"] >= hist_start) & (df["target_time"] < issue_ts)]
+        .groupby("target_time", as_index=False).first()
+        .sort_values("target_time")
+    )
+    fcst = (
+        df[(df["issue_time"] == issue_ts) & (df["target_time"] > issue_ts) & (df["target_time"] <= fcst_end)]
+        .sort_values("target_time")
+    )
+
+    colors = ["#38bdf8", "#fbbf24", "#f87171"]
+    fig, axes = plt.subplots(3, 1, figsize=(14, 10), sharex=True)
+
+    for ax, (var_name, (fcst_col, actual_col, unit)), color in zip(axes, WEATHER_PLOT_VARS.items(), colors):
+        ax.plot(hist["target_time"], hist[actual_col], color=color, linewidth=1.5, label="Actual")
+        if not fcst.empty:
+            ax.plot(fcst["target_time"], fcst[fcst_col], color=color, linewidth=1.5, linestyle="--", label="Forecast")
+            if fcst[actual_col].notna().any():
+                ax.plot(fcst["target_time"], fcst[actual_col], color="grey", linewidth=1, linestyle=":", label="Actual (fcst window)")
+            ax.axvspan(fcst["target_time"].iloc[0], fcst["target_time"].iloc[-1], alpha=0.07, color=color)
+        ax.axvline(issue_ts, color="white", linewidth=0.8, linestyle="--", alpha=0.4)
+        ax.set_ylabel(f"{var_name}\n({unit})", fontsize=9)
+        ax.legend(fontsize=8, loc="upper left")
+
+    axes[-1].xaxis.set_major_formatter(mdates.DateFormatter("%d %b"))
+    axes[-1].xaxis.set_major_locator(mdates.DayLocator())
+    fig.autofmt_xdate()
+    fig.suptitle(
+        f"Weather · DK1 West · {ctx_days}d history + 5-day forecast\n"
+        f"issued at {issue_ts.strftime('%Y-%m-%d %H:%M')}",
+        fontsize=12,
+    )
+    fig.tight_layout()
+    plt.show()
 
 
 # ── CLI entry-point ────────────────────────────────────────────────────────────
