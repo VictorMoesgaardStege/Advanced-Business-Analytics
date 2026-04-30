@@ -25,8 +25,10 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
 import requests
+import pandas as pd
 
 BASE_URL = "https://api.energidataservice.dk/dataset/ConsumptionGridAreaHour"
+DEFAULT_CSV = Path("data/consumption_dk1_raw.csv")
 DEFAULT_COLUMNS = [
     "Date",
     "TimeUTC",
@@ -137,6 +139,30 @@ def write_csv(records: list[dict[str, Any]], output_path: Path) -> None:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(records)
+
+
+def fetch_consumption(
+    start: str,
+    end: str,
+    price_area: str = "DK1",
+    csv_path: str | Path | None = None,
+) -> pd.DataFrame:
+    """Fetch hourly electricity consumption, save it as CSV, and return a DataFrame."""
+    if csv_path is None:
+        csv_path = Path("data") / f"consumption_{price_area.lower()}_raw.csv"
+    output_path = Path(csv_path)
+
+    records = fetch_records(start=start, end=end, price_area=[price_area])
+    write_csv(records, output_path)
+
+    df = pd.DataFrame(records)
+    if "TimeDK" in df.columns:
+        df["TimeDK"] = pd.to_datetime(df["TimeDK"], errors="coerce")
+    if "TimeUTC" in df.columns:
+        df["TimeUTC"] = pd.to_datetime(df["TimeUTC"], errors="coerce")
+
+    print(f"Saved {len(df):,} row(s) to {output_path}")
+    return df
 
 
 def print_summary(records: list[dict[str, Any]]) -> None:

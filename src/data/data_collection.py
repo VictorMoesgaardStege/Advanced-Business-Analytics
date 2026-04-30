@@ -50,18 +50,10 @@ def fetch_weather_actuals(
     -------
     pd.DataFrame with one row per (region, hour).
     """
-    from src.data.fetch_weather_actuals_data import fetch_records, write_csv
+    from src.data.fetch_weather_actuals_data import fetch_weather_actuals as _fetch_weather_actuals
 
     print(f"[fetch_weather_actuals] {start} -> {end}")
-    records = fetch_records(start=start, end=end)
-    csv_path = Path(csv_path)
-    write_csv(records, csv_path)
-    print(f"  {len(records):,} rows saved -> {csv_path}")
-
-    df = pd.DataFrame(records)
-    if "TimeDK" in df.columns:
-        df["TimeDK"] = pd.to_datetime(df["TimeDK"], errors="coerce")
-    return df
+    return _fetch_weather_actuals(start=start, end=end, csv_path=csv_path)
 
 
 # ── Weather forecasts ──────────────────────────────────────────────────────────
@@ -83,18 +75,10 @@ def fetch_weather_forecasts(
     -------
     pd.DataFrame with one row per (region, hour, previous_day_offset).
     """
-    from src.data.fetch_weather_forecast_data import fetch_records, write_csv
+    from src.data.fetch_weather_forecast_data import fetch_weather_forecasts as _fetch_weather_forecasts
 
     print(f"[fetch_weather_forecasts] {start} -> {end}")
-    records = fetch_records(start=start, end=end)
-    csv_path = Path(csv_path)
-    write_csv(records, csv_path)
-    print(f"  {len(records):,} rows saved -> {csv_path}")
-
-    df = pd.DataFrame(records)
-    if "TimeDK" in df.columns:
-        df["TimeDK"] = pd.to_datetime(df["TimeDK"], errors="coerce")
-    return df
+    return _fetch_weather_forecasts(start=start, end=end, csv_path=csv_path)
 
 
 # ── Consumption ────────────────────────────────────────────────────────────────
@@ -119,21 +103,13 @@ def fetch_consumption(
     pd.DataFrame with columns Date, TimeUTC, TimeDK, PriceArea, GridArea,
                  GridCompanyName, ConsumptionkWh.
     """
-    from src.data.fetch_consumption_data import fetch_records, write_csv
+    from src.data.fetch_consumption_data import fetch_consumption as _fetch_consumption
 
     if csv_path is None:
         csv_path = DATA_DIR / f"consumption_{price_area.lower()}_raw.csv"
-    csv_path = Path(csv_path)
 
     print(f"[fetch_consumption] {start} -> {end}  area={price_area}")
-    records = fetch_records(start=start, end=end, price_area=[price_area])
-    write_csv(records, csv_path)
-    print(f"  {len(records):,} rows saved -> {csv_path}")
-
-    df = pd.DataFrame(records)
-    if "TimeDK" in df.columns:
-        df["TimeDK"] = pd.to_datetime(df["TimeDK"], errors="coerce")
-    return df
+    return _fetch_consumption(start=start, end=end, price_area=price_area, csv_path=csv_path)
 
 
 # ── Day-ahead prices ───────────────────────────────────────────────────────────
@@ -158,52 +134,13 @@ def fetch_day_ahead_prices(
     pd.DataFrame with columns TimeUTC, TimeDK, PriceArea,
                  DayAheadPriceEUR, DayAheadPriceDKK, _source_dataset.
     """
-    from src.data.fetch_day_ahead_price_data import (
-        fetch_records_from_url,
-        normalize_dayahead_record,
-        normalize_elspot_record,
-        deduplicate_records,
-        write_csv,
-        DAYAHEAD_URL,
-        ELSPOT_URL,
-        DAYAHEAD_COLUMNS,
-        ELSPOT_COLUMNS,
-    )
+    from src.data.fetch_day_ahead_price_data import fetch_day_ahead_prices as _fetch_day_ahead_prices
 
     if csv_path is None:
         csv_path = DATA_DIR / f"day_ahead_prices_{price_area.lower()}_raw.csv"
-    csv_path = Path(csv_path)
 
     print(f"[fetch_day_ahead_prices] {start} -> {end}  area={price_area}")
-
-    elspot_raw = fetch_records_from_url(
-        ELSPOT_URL, start=start, end=end,
-        price_area=[price_area],
-        sort="HourUTC desc,PriceArea",
-        columns=ELSPOT_COLUMNS,
-    )
-    dayahead_raw = fetch_records_from_url(
-        DAYAHEAD_URL, start=start, end=end,
-        price_area=[price_area],
-        sort="TimeUTC desc,PriceArea",
-        columns=DAYAHEAD_COLUMNS,
-    )
-
-    print(f"  Elspotprices: {len(elspot_raw):,} rows | DayAheadPrices: {len(dayahead_raw):,} rows")
-
-    merged = (
-        [normalize_elspot_record(r) for r in elspot_raw]
-        + [normalize_dayahead_record(r) for r in dayahead_raw]
-    )
-    merged = deduplicate_records(merged)
-    write_csv(merged, csv_path)
-    print(f"  {len(merged):,} merged rows saved -> {csv_path}")
-
-    df = pd.DataFrame(merged)
-    for col in ("TimeUTC", "TimeDK"):
-        if col in df.columns:
-            df[col] = pd.to_datetime(df[col], errors="coerce")
-    return df
+    return _fetch_day_ahead_prices(start=start, end=end, price_area=price_area, csv_path=csv_path)
 
 
 # ── Convenience: fetch everything ─────────────────────────────────────────────
