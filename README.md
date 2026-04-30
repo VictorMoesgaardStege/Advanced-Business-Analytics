@@ -13,6 +13,10 @@ We design and evaluate a data-driven forecasting and decision-support system tha
 
 By translating raw price forecasts into recommendations, the system helps consumers make better consumption decisions, indirectly balancing supply and demand and hopefully reducing the amount of hours the grid experiences high stress loads.
 
+Here is the application link:
+
+https://advanced-business-analytics-pwf6fcgrvyrfnhv9cq2pce.streamlit.app/
+
 ## Repository Structure
 
 ```
