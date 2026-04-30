@@ -7,22 +7,30 @@ result as forecast_dataset.parquet.
 
 Quick start
 -----------
-    from data_processing import build_forecast_dataset
+    from src.data.data_processing import build_forecast_dataset
 
     build_forecast_dataset()
 
-Or run directly:
-    python data_processing.py
+Run from the repository root:
+    python -m src.data.data_processing
+
+Direct script execution also works from the repository root:
+    python src/data/data_processing.py
 """
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
-DATA_DIR = Path("data")
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+DATA_DIR = ROOT / "data"
 
 FORECAST_HORIZON_HOURS = 120
 ISSUE_INTERVAL_HOURS   = 12
