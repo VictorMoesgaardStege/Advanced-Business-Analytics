@@ -16,8 +16,6 @@ env/
 # Jupyter notebooks checkpoints
 .ipynb_checkpoints/
 
-# Model artefacts
-models/
 
 # Data files (can be large; users fetch their own)
 processed_data/*.csv
