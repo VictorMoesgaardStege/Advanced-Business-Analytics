@@ -233,7 +233,7 @@ def fetch_all(start: str, end: str, price_area: str = "DK1") -> dict[str, pd.Dat
 
     results = {}
     results["weather_actuals"]   = fetch_weather_actuals(start, end)
-    results["weather_forecasts"] = fetch_weather_forecasts(start, end)
+    results["weather_forecasts"] = fetch_weather_forecasts("2025-01-01", end)
     results["consumption"]       = fetch_consumption(start, end, price_area=price_area)
     results["prices"]            = fetch_day_ahead_prices(start, end, price_area=price_area)
 

@@ -289,5 +289,34 @@ def plot_weather_forecast(
 
 # ── CLI entry-point ────────────────────────────────────────────────────────────
 
+def build_error_distributions(
+    actuals_csv:  str | Path = DATA_DIR / "weather_actuals_raw.csv",
+    forecast_csv: str | Path = DATA_DIR / "weather_forecasts_raw.csv",
+    summary_csv:  str | Path = DATA_DIR / "weather_error_distributions.csv",
+    errors_csv:   str | Path = DATA_DIR / "weather_errors_raw.csv",
+) -> None:
+    """Estimate weather forecast error distributions from real NWP previous-run data."""
+    from src.data.estimate_weather_forecast_error_distributions import (
+        load_csv, merge_actuals_and_forecasts, build_error_rows, summarize_errors,
+    )
+
+    print("[build_error_distributions] Loading actuals and forecasts...")
+    actual_df   = load_csv(Path(actuals_csv))
+    forecast_df = load_csv(Path(forecast_csv))
+
+    merged     = merge_actuals_and_forecasts(actual_df, forecast_df)
+    error_df   = build_error_rows(merged)
+    summary_df = summarize_errors(error_df)
+
+    Path(summary_csv).parent.mkdir(parents=True, exist_ok=True)
+    summary_df.to_csv(summary_csv, index=False)
+    print(f"  {len(summary_df)} rows saved -> {summary_csv}")
+
+    Path(errors_csv).parent.mkdir(parents=True, exist_ok=True)
+    error_df.to_csv(errors_csv, index=False)
+    print(f"  {len(error_df):,} raw error rows saved -> {errors_csv}")
+
+
 if __name__ == "__main__":
+    build_error_distributions()
     build_forecast_dataset()
