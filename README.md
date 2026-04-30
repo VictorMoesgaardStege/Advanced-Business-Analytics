@@ -27,23 +27,27 @@ Advanced-Business-Analytics/
 ├── data/                          # Local datasets (CSV, Parquet, etc.; some files are git-ignored)
 ├── src/
 │   ├── analysis/                  # Analysis scripts used by project_handin.ipynb
+│   │   ├── __init__.py            # module init
 │   │   ├── energy_congestion_analysis.py  # Analyzes grid stress using electricity consumption data
 │   │   ├── forecast_analysis.py           # Evaluates electricity price forecast performance
 │   │   └── impact_analysis.py             # Assesses recommendation impact using simulation results
 │   ├── data/                      # Data acquisition scripts and processing
+│   │   ├── __init__.py            # module init
 │   │   ├── data_collection.py             # Collects all API fetching for all raw data sources
 │   │   ├── data_processing.py             # Builds dataset for XG boost modelling
 │   │   ├── fetch_consumption_data.py      # Fetches electricity consumption data
 │   │   ├── fetch_day_ahead_price_data.py  # Fetches day-ahead electricity price data
 │   │   ├── fetch_weather_actuals_data.py  # Fetches historical weather observations
 │   │   └── fetch_weather_forecast_data.py # Fetches weather forecast data
-│   └── models/                    # Forecasting and simulation models
-│       ├── forecast_model.py      # Builds XGBoost forecasts and uncertainty estimates
+│   └── models/   
+│       ├── __init__.py            # module init
+│       ├── XG_Boost_full_Res.py   # Builds XGBoost forecasts and uncertainty estimates
 │       └── simulation_model.py    # Runs heuristic simulations of recommendation impact
 ├── .gitignore                     # Files and folders excluded from version control
 ├── dashboard.py                   # Streamlit dashboard for price forecasting and recommendations
 ├── project_handin.ipynb           # Main technical report with narrative, analysis, and code outputs
-└── requirements.txt               # Python dependencies
+├── requirements.txt               # Python dependencies
+└── section_data_scraping.ipynb    # Small notebook section that is meant to be in project_handin.ipynb
 ```
 
 ## Approach
