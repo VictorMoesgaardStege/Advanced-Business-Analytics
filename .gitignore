@@ -13,6 +13,9 @@ build/
 venv/
 env/
 
+# Local installers
+Miniforge3-*.sh
+
 # Jupyter notebooks checkpoints
 .ipynb_checkpoints/
 
