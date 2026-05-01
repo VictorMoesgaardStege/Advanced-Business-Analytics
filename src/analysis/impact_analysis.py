@@ -5,6 +5,7 @@ import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from IPython.display import Markdown, display
 
 from src.models.energy_shift_heuristic import (
     DECISION_WEIGHTS,
@@ -521,6 +522,79 @@ def make_heuristic_assumption_summary(
     )
 
 
+def make_heuristic_assumption_markdown_tables(
+    segment_assumptions: Mapping[str, Mapping[str, float]] = SEGMENT_ASSUMPTIONS,
+    household_share_of_system: float = HOUSEHOLD_SHARE_OF_SYSTEM,
+) -> tuple[str, str]:
+    assumption_summary = make_heuristic_assumption_summary(
+        segment_assumptions=segment_assumptions,
+        household_share_of_system=household_share_of_system,
+    )
+    assumption_table = make_heuristic_assumption_table(
+        segment_assumptions=segment_assumptions
+    )
+
+    summary_rows = [
+        (
+            "Household share of total system load",
+            f"{assumption_summary['household_share_of_system_pct']:.1f}%",
+        ),
+        (
+            "Flexible share of household load",
+            f"{assumption_summary['flexible_share_of_household_pct']:.1f}%",
+        ),
+        (
+            "Maximum theoretical shiftable share of household load",
+            (
+                f"{assumption_summary['max_theoretical_shiftable_share_of_household_pct']:.1f}%"
+            ),
+        ),
+        (
+            "Maximum theoretical shiftable share of total system load",
+            (
+                f"{assumption_summary['max_theoretical_shiftable_share_of_system_pct']:.1f}%"
+            ),
+        ),
+    ]
+
+    summary_md = ["| Assumption | Value |", "|---|---:|"]
+    for label, value in summary_rows:
+        summary_md.append(f"| {label} | {value} |")
+
+    segment_md = [
+        (
+            "| Segment | Share of household load | Max shiftable share within segment | "
+            "Max shiftable share of household load | Max wait | Wait penalty |"
+        ),
+        "|---|---:|---:|---:|---:|---:|",
+    ]
+    for _, row in assumption_table.iterrows():
+        segment_md.append(
+            "| "
+            f"{row['label']} | "
+            f"{row['share_of_household_load_pct']:.1f}% | "
+            f"{row['max_shiftable_share_pct']:.1f}% | "
+            f"{row['max_shiftable_share_of_household_pct']:.1f}% | "
+            f"{int(row['max_wait_h'])} h | "
+            f"{row['wait_penalty']:.2f} |"
+        )
+
+    return "\n".join(summary_md), "\n".join(segment_md)
+
+
+def display_heuristic_assumption_tables(
+    segment_assumptions: Mapping[str, Mapping[str, float]] = SEGMENT_ASSUMPTIONS,
+    household_share_of_system: float = HOUSEHOLD_SHARE_OF_SYSTEM,
+) -> tuple[str, str]:
+    summary_md, segment_md = make_heuristic_assumption_markdown_tables(
+        segment_assumptions=segment_assumptions,
+        household_share_of_system=household_share_of_system,
+    )
+    display(Markdown(summary_md))
+    display(Markdown(segment_md))
+    return summary_md, segment_md
+
+
 def run_granular_shift_illustration(
     issue_time: Optional[pd.Timestamp] = None,
     preds: Optional[pd.DataFrame] = None,
@@ -995,8 +1069,10 @@ __all__ = [
     "add_household_load_split",
     "build_average_net_shift_heatmap",
     "build_peak_excess_summary",
+    "display_heuristic_assumption_tables",
     "get_central_segment_assumptions",
     "load_system_consumption_df",
+    "make_heuristic_assumption_markdown_tables",
     "make_heuristic_assumption_summary",
     "make_heuristic_assumption_table",
     "make_load_share_summary",
