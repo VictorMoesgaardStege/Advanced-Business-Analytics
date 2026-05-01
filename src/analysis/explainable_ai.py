@@ -1,5 +1,5 @@
 """
-explainable_ai.py  -  XAI plots for the DK1 XGBoost price forecasting model
+explainable_ai.py  -  Explainable AI plots for the DK1 XGBoost price forecasting model
 =============================================================================
 Notebook-callable functions for model explainability figures.
 When called without `out`, each function displays the plot inline (plt.show()).
@@ -48,6 +48,7 @@ from src.models.XG_Boost_full_Res import (
 EUR_DKK = 7.46  # model outputs EUR/MWh; multiply for DKK/MWh
 MODEL_DATASET_FILE = ROOT / "data/model_dataset.parquet"
 PREDICTIONS_FILE = OUTPUT_DIR / "predictions.parquet"
+DEFAULT_LIME_ISSUE_TIME = pd.Timestamp("2025-12-15 00:00:00")
 
 
 FEATURE_LABELS = {
@@ -455,7 +456,7 @@ def display_xai_artifacts(
     out: Path = OUTPUT_DIR,
     width: int | None = None,
 ) -> None:
-    """Display saved XAI PNG artifacts in a notebook without recomputing them."""
+    """Display saved Explainable AI PNG artifacts in a notebook without recomputing them."""
     from IPython.display import Image, display
 
     out = Path(out)
@@ -491,8 +492,13 @@ def plot_shap_explanations(
 def plot_lime_explanations(
     out: Path = OUTPUT_DIR,
     width: int | None = None,
+    issue_time: str | pd.Timestamp = DEFAULT_LIME_ISSUE_TIME,
 ) -> None:
-    """Notebook wrapper for the saved LIME local explanation figure."""
+    """Notebook wrapper that regenerates and displays the December 2025 LIME figure."""
+    out = Path(out)
+    final_models = joblib.load(out / "final_day_models.joblib")
+    df = prepare_dataset()
+    plot_lime(final_models, df, out=out, issue_time=issue_time)
     display_xai_artifacts(("fig7_lime.png",), out=out, width=width)
 
 
@@ -737,9 +743,9 @@ def main():
     print("\nLoading dataset (needed for LIME and SHAP)...")
     df = prepare_dataset()
 
-    print("\nGenerating XAI plots...")
+    print("\nGenerating Explainable AI plots...")
     plot_feature_importance(final_models, out=OUTPUT_DIR)
-    plot_lime(final_models, df, out=OUTPUT_DIR)
+    plot_lime(final_models, df, out=OUTPUT_DIR, issue_time=DEFAULT_LIME_ISSUE_TIME)
     plot_shap(final_models, df, out=OUTPUT_DIR)
 
     print("\nExporting SHAP data for dashboard...")

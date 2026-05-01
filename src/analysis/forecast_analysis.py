@@ -425,14 +425,12 @@ def _weather_error_params(
     return float(np.interp(horizon_hours, h, mean)), float(np.interp(horizon_hours, h, std))
 
 
-def plot_weather_forecast_grid(
-    horizon_hours: int = 24,
-    model_dataset: str | Path = MODEL_DATASET_PATH,
-    start: str | None = "2025-01-01",
-    days: int = 14,
-):
-    """Compare simulated weather forecasts with actual values at one horizon."""
-    df = load_model_dataset(model_dataset)
+def _prepare_weather_forecast_slice(
+    df: pd.DataFrame,
+    horizon_hours: int,
+    start: str | None,
+    days: int,
+) -> tuple[pd.DataFrame, pd.Timestamp, pd.Timestamp]:
     sub = df[df["horizon_h"].astype(int).eq(int(horizon_hours))].copy()
     if sub.empty:
         raise ValueError(f"No rows found for horizon_h={horizon_hours}.")
@@ -445,35 +443,124 @@ def plot_weather_forecast_grid(
             start_ts = sub["target_time"].min()
     end_ts = start_ts + pd.Timedelta(days=days)
     sub = sub[sub["target_time"].between(start_ts, end_ts)].sort_values("target_time")
+    return sub, start_ts, end_ts
 
-    fig, axes = plt.subplots(2, 2, figsize=(15, 8), sharex=True)
-    axes = axes.flatten()
 
-    for ax, (title, cfg) in zip(axes, WEATHER_PLOT_VARS.items()):
+def _plot_weather_forecast_panel(
+    axes: np.ndarray,
+    sub: pd.DataFrame,
+    horizon_hours: int,
+) -> None:
+    flat_axes = axes.flatten()
+    for ax, (title, cfg) in zip(flat_axes, WEATHER_PLOT_VARS.items()):
         mean_err, std_err = _weather_error_params(cfg["error_var"], horizon_hours)
         actual = sub[cfg["actual"]].astype(float)
         fcst = sub[cfg["fcst"]].astype(float)
         color = cfg["color"]
 
         ax.plot(sub["target_time"], actual, color="#111827", linewidth=1.2, label="Actual")
-        ax.plot(sub["target_time"], fcst, color=color, linewidth=1.2, linestyle="--", label="Forecast-like input")
+        ax.plot(
+            sub["target_time"],
+            fcst,
+            color=color,
+            linewidth=1.2,
+            linestyle="--",
+            label="Forecast-like input",
+        )
         if np.isfinite(std_err):
             lower = actual + mean_err - 1.96 * std_err
             upper = actual + mean_err + 1.96 * std_err
-            ax.fill_between(sub["target_time"], lower, upper, color=color, alpha=0.12, label="Approx. 95% error band")
+            ax.fill_between(
+                sub["target_time"],
+                lower,
+                upper,
+                color=color,
+                alpha=0.12,
+                label="Approx. 95% error band",
+            )
         ax.set_title(f"{title} ({cfg['unit']})")
+        ax.set_facecolor("#ffffff")
         ax.grid(alpha=0.25)
         ax.legend(fontsize=8, loc="upper right")
 
-    axes[-2].xaxis.set_major_formatter(mdates.DateFormatter("%b %d"))
-    axes[-1].xaxis.set_major_formatter(mdates.DateFormatter("%b %d"))
+    for ax in axes[-1]:
+        ax.xaxis.set_major_formatter(mdates.DateFormatter("%b %d"))
+
+
+def plot_weather_forecast_grid(
+    horizon_hours: int | Iterable[int] = 24,
+    model_dataset: str | Path = MODEL_DATASET_PATH,
+    start: str | None = "2025-01-01",
+    days: int = 14,
+):
+    """Compare simulated weather forecasts with actual values for one or more horizons."""
+    df = load_model_dataset(model_dataset)
+
+    if isinstance(horizon_hours, int):
+        sub, start_ts, end_ts = _prepare_weather_forecast_slice(df, horizon_hours, start, days)
+        fig, axes = plt.subplots(2, 2, figsize=(15, 8.6), sharex=True)
+        _plot_weather_forecast_panel(axes, sub, int(horizon_hours))
+        fig.suptitle(
+            f"Forecast-like weather inputs at h={int(horizon_hours)} "
+            f"({start_ts:%Y-%m-%d} to {end_ts:%Y-%m-%d})",
+            fontsize=13,
+            y=0.98,
+            bbox={"facecolor": "white", "edgecolor": "none", "pad": 4},
+        )
+        fig.autofmt_xdate()
+        fig.tight_layout(rect=[0, 0, 1, 0.94])
+        plt.show()
+        return fig
+
+    horizons = [int(h) for h in horizon_hours]
+    if not horizons:
+        raise ValueError("horizon_hours must contain at least one horizon.")
+
+    if len(horizons) == 1:
+        return plot_weather_forecast_grid(
+            horizon_hours=horizons[0],
+            model_dataset=model_dataset,
+            start=start,
+            days=days,
+        )
+
+    fig = plt.figure(figsize=(7.8 * len(horizons), 9.4))
+    subfigs = fig.subfigures(1, len(horizons), wspace=0.08)
+    if len(horizons) == 2:
+        subfigs = list(subfigs)
+
+    ranges: list[tuple[pd.Timestamp, pd.Timestamp]] = []
+    for subfig, horizon in zip(subfigs, horizons):
+        subfig.patch.set_facecolor("#f3f4f6")
+        subfig.patch.set_edgecolor("#cbd5e1")
+        subfig.patch.set_linewidth(2.0)
+        sub, start_ts, end_ts = _prepare_weather_forecast_slice(df, horizon, start, days)
+        axes = subfig.subplots(2, 2, sharex=True)
+        subfig.subplots_adjust(left=0.08, right=0.97, bottom=0.09, top=0.87, wspace=0.28, hspace=0.28)
+        _plot_weather_forecast_panel(axes, sub, horizon)
+        subfig.suptitle(
+            f"h={horizon} ({start_ts:%Y-%m-%d} to {end_ts:%Y-%m-%d})",
+            fontsize=12,
+            y=0.96,
+            fontweight="semibold",
+        )
+        subfig.autofmt_xdate()
+        ranges.append((start_ts, end_ts))
+
+    overall_start = min(start_ts for start_ts, _ in ranges)
+    overall_end = max(end_ts for _, end_ts in ranges)
     fig.suptitle(
-        f"Forecast-like weather inputs at h={horizon_hours} "
-        f"({start_ts:%Y-%m-%d} to {end_ts:%Y-%m-%d})",
-        fontsize=13,
+        "Forecast-like weather inputs by horizon "
+        f"({overall_start:%Y-%m-%d} to {overall_end:%Y-%m-%d})",
+        fontsize=15,
+        y=0.995,
+        bbox={
+            "facecolor": "white",
+            "edgecolor": "#e5e7eb",
+            "boxstyle": "round,pad=0.35",
+        },
     )
-    fig.autofmt_xdate()
-    fig.tight_layout()
+    fig.tight_layout(rect=[0, 0, 1, 0.9])
     plt.show()
     return fig
 
@@ -501,7 +588,7 @@ def plot_weather_price_correlation(
     labels = corr.index.str.replace("fcst_", "", regex=False).str.replace("_", " ")
     colors = np.where(corr >= 0, "#dc2626", "#2563eb")
 
-    fig, ax = plt.subplots(figsize=(10, 8))
+    fig, ax = plt.subplots(figsize=(6, 5.2))
     ax.barh(labels, corr.values, color=colors)
     ax.axvline(0, color="#111827", linewidth=1)
     ax.set_title(f"Correlation with future DK1 price ({horizon_text})")
