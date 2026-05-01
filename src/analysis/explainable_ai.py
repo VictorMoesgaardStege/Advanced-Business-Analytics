@@ -97,7 +97,6 @@ def display_xai_artifacts(
         filenames = (
             "fig4_feature_importance.png",
             "fig7_lime.png",
-            "fig9_shap_bar.png",
             "fig10_shap_beeswarm.png",
         )
 
@@ -114,9 +113,9 @@ def plot_shap_explanations(
     out: Path = OUTPUT_DIR,
     width: int | None = None,
 ) -> None:
-    """Notebook wrapper for the saved SHAP bar and beeswarm figures."""
+    """Notebook wrapper for the saved SHAP beeswarm figures."""
     display_xai_artifacts(
-        ("fig9_shap_bar.png", "fig10_shap_beeswarm.png"),
+        ("fig10_shap_beeswarm.png"),
         out=out,
         width=width,
     )
