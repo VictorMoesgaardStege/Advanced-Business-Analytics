@@ -15,7 +15,7 @@ Quick start (notebook)
         plot_feature_importance,
         plot_lime, plot_shap, export_shap_for_dashboard,
         make_dashboard_shap_summary, summarize_shap_quantile_direction,
-        explain_lime_for_instance,
+        explain_lime_for_instance, make_dashboard_lime_summary,
         display_xai_artifacts,
     )
     from src.models.XG_Boost_full_Res import OUTPUT_DIR, prepare_dataset
@@ -42,10 +42,12 @@ sys.path.insert(0, str(ROOT))
 
 from src.models.XG_Boost_full_Res import (
     FEATURES, DAY_GROUPS, OUTPUT_DIR, COLORS,
-    prepare_dataset,
+    REGION, prepare_dataset,
 )
 
 EUR_DKK = 7.46  # model outputs EUR/MWh; multiply for DKK/MWh
+MODEL_DATASET_FILE = ROOT / "data/model_dataset.parquet"
+PREDICTIONS_FILE = OUTPUT_DIR / "predictions.parquet"
 
 
 FEATURE_LABELS = {
@@ -268,6 +270,155 @@ def explain_lime_for_instance(
             result["contribution_dkk_kwh"].abs().sort_values(ascending=False).index
         ).reset_index(drop=True)
     return result
+
+
+def make_dashboard_hourly_forecast(
+    predictions: pd.DataFrame,
+    issue_time: str | pd.Timestamp | None = None,
+    eur_dkk: float = EUR_DKK,
+) -> pd.DataFrame:
+    """Prepare the 120-hour forecast slice that the dashboard uses for LIME windows."""
+    if predictions.empty:
+        return pd.DataFrame()
+
+    preds = predictions.copy()
+    preds["issue_time"] = pd.to_datetime(preds["issue_time"])
+    preds["target_time"] = pd.to_datetime(preds["target_time"])
+    available = pd.to_datetime(preds["issue_time"].unique())
+    if issue_time is None:
+        issue_ts = pd.Timestamp(available.max())
+    else:
+        selected = pd.Timestamp(issue_time)
+        issue_ts = min(available, key=lambda x: abs(x - selected))
+
+    future = (
+        preds[(preds["issue_time"] == issue_ts) & (preds["target_time"] > issue_ts)]
+        .sort_values("target_time")
+        .head(120)
+        .copy()
+    )
+    if future.empty:
+        return pd.DataFrame()
+
+    future["pred_dkk"] = future["predicted"] * eur_dkk / 1000
+    future["issue_time"] = issue_ts
+    return future[["issue_time", "target_time", "horizon_h", "pred_dkk"]].reset_index(drop=True)
+
+
+def select_extreme_forecast_windows(
+    hourly_forecast: pd.DataFrame,
+    window_hours: int = 3,
+) -> list[dict]:
+    """Select the cheapest and most expensive rolling windows used for local LIME."""
+    required = {"issue_time", "target_time", "horizon_h", "pred_dkk"}
+    if hourly_forecast.empty or not required.issubset(hourly_forecast.columns):
+        return []
+
+    df = hourly_forecast.dropna(subset=["pred_dkk"]).sort_values("target_time").reset_index(drop=True)
+    if df.empty:
+        return []
+
+    window_hours = min(window_hours, len(df))
+    df["_window_avg"] = df["pred_dkk"].rolling(window_hours, min_periods=window_hours).mean()
+    valid = df.dropna(subset=["_window_avg"])
+    if valid.empty:
+        return []
+
+    windows = []
+    for label, idx in [
+        ("Cheapest selected window", int(valid["_window_avg"].idxmin())),
+        ("Most expensive selected window", int(valid["_window_avg"].idxmax())),
+    ]:
+        start_i = max(0, idx - window_hours + 1)
+        end_i = idx
+        mid_i = start_i + (end_i - start_i) // 2
+        windows.append(
+            {
+                "window_label": label,
+                "window_start": pd.Timestamp(df.loc[start_i, "target_time"]),
+                "window_end": pd.Timestamp(df.loc[end_i, "target_time"]) + pd.Timedelta(hours=1),
+                "window_avg_dkk_kwh": float(df.loc[start_i:end_i, "pred_dkk"].mean()),
+                "issue_time": pd.Timestamp(df.loc[mid_i, "issue_time"]),
+                "horizon_h": int(df.loc[mid_i, "horizon_h"]),
+                "representative_time": pd.Timestamp(df.loc[mid_i, "target_time"]),
+            }
+        )
+    return windows
+
+
+def load_lime_dashboard_dataset(
+    model_data_path: Path = MODEL_DATASET_FILE,
+) -> pd.DataFrame:
+    """Load the model-ready feature rows needed for dashboard-style LIME examples."""
+    model_data_path = Path(model_data_path)
+    if not model_data_path.exists():
+        raise FileNotFoundError(f"Missing {model_data_path}")
+
+    columns = list(dict.fromkeys(["region", "issue_time", "target_time", "horizon_h"] + FEATURES))
+    df = pd.read_parquet(model_data_path, columns=columns)
+    df = df[df["region"] == REGION].copy()
+    df["issue_time"] = pd.to_datetime(df["issue_time"])
+    df["target_time"] = pd.to_datetime(df["target_time"])
+    return df.dropna(subset=FEATURES).reset_index(drop=True)
+
+
+def make_dashboard_lime_summary(
+    final_models: dict,
+    predictions_path: Path = PREDICTIONS_FILE,
+    model_data_path: Path = MODEL_DATASET_FILE,
+    issue_time: str | pd.Timestamp | None = None,
+    window_hours: int = 3,
+    top_n: int = 4,
+    eur_dkk: float = EUR_DKK,
+) -> pd.DataFrame:
+    """Return local LIME contributions for the two windows passed to the dashboard LLM."""
+    predictions_path = Path(predictions_path)
+    if not predictions_path.exists():
+        raise FileNotFoundError(f"Missing {predictions_path}")
+
+    predictions = pd.read_parquet(predictions_path)
+    hourly_forecast = make_dashboard_hourly_forecast(
+        predictions=predictions,
+        issue_time=issue_time,
+        eur_dkk=eur_dkk,
+    )
+    windows = select_extreme_forecast_windows(hourly_forecast, window_hours=window_hours)
+    if not windows:
+        return pd.DataFrame()
+
+    lime_df = load_lime_dashboard_dataset(model_data_path)
+    rows = []
+    for window in windows:
+        exp = explain_lime_for_instance(
+            final_models=final_models,
+            df=lime_df,
+            issue_time=window["issue_time"],
+            horizon_h=window["horizon_h"],
+            top_n=top_n,
+            eur_dkk=eur_dkk,
+        )
+        for _, row in exp.head(top_n).iterrows():
+            item = row.to_dict()
+            item.update(window)
+            rows.append(item)
+
+    if not rows:
+        return pd.DataFrame()
+
+    result = pd.DataFrame(rows)
+    first_cols = [
+        "window_label",
+        "window_start",
+        "window_end",
+        "window_avg_dkk_kwh",
+        "representative_time",
+        "horizon_h",
+        "feature_rule",
+        "direction",
+        "contribution_dkk_kwh",
+    ]
+    ordered = first_cols + [c for c in result.columns if c not in first_cols]
+    return result[ordered].reset_index(drop=True)
 
 
 # -- Notebook helpers -----------------------------------------------------------
