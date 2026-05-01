@@ -774,6 +774,128 @@ def make_uncertainty_summary_table(
     return out.rename(columns=rename)
 
 
+def plot_price_history_with_5day_forecast(
+    predictions_path: str | Path = PREDICTIONS_PATH,
+    price_csv: str | Path = DATA_DIR / "day_ahead_prices_dk1_raw.csv",
+    issue_time: str | pd.Timestamp | None = None,
+    ctx_days: int = 7,
+    unit: str = "dkk_kwh",
+    show_actuals: bool = True,
+    show_uncertainty: bool = True,
+    cutoff: str | pd.Timestamp = POST_CRISIS_CUTOFF,
+):
+    """Plot recent price history followed by one 120-hour XGBoost forecast."""
+    import plotly.graph_objects as go
+
+    raw = load_predictions(predictions_path)
+    issue = _resolve_issue_time(raw, issue_time)
+    scale, label = _unit_scale(unit)
+
+    single = raw[raw["issue_time"].eq(issue)].sort_values("target_time").copy()
+    single = single[single["target_time"].gt(issue)].head(120)
+    if single.empty:
+        raise ValueError(f"No 120-hour forecast rows found for issue_time={issue}.")
+
+    single["predicted_unit"] = single["predicted"] * scale
+    single["actual_unit"] = single[TARGET_COL] * scale
+
+    prices = _load_prices(price_csv)
+    if unit.lower() in {"dkk_kwh", "dkk/kwh"} and "DayAheadPriceDKK" in prices.columns:
+        prices["price_unit"] = prices["DayAheadPriceDKK"] / 1000
+    elif unit.lower() in {"dkk_mwh", "dkk/mwh"} and "DayAheadPriceDKK" in prices.columns:
+        prices["price_unit"] = prices["DayAheadPriceDKK"]
+    else:
+        prices["price_unit"] = prices[TARGET_COL] * scale
+
+    hist_end = single["target_time"].min()
+    hist_start = hist_end - pd.Timedelta(days=ctx_days)
+    hist = (
+        prices[prices["TimeDK"].between(hist_start, hist_end, inclusive="left")]
+        .dropna(subset=["price_unit"])
+        .sort_values("TimeDK")
+    )
+
+    fig = go.Figure()
+    fig.add_trace(
+        go.Scatter(
+            x=hist["TimeDK"],
+            y=hist["price_unit"],
+            mode="lines",
+            line=dict(color="#fb923c", width=2),
+            name="Historical actual",
+        )
+    )
+
+    if show_uncertainty:
+        unc = compute_residual_uncertainty(predictions_path, unit=unit, cutoff=cutoff)
+        sigma_map = unc.set_index("horizon_h")["sigma"].to_dict()
+        single["sigma"] = single["horizon_h"].map(sigma_map).fillna(0.0)
+        if single["sigma"].gt(0).any():
+            fig.add_trace(
+                go.Scatter(
+                    x=single["target_time"],
+                    y=single["predicted_unit"] + single["sigma"],
+                    mode="lines",
+                    line=dict(width=0),
+                    hoverinfo="skip",
+                    showlegend=False,
+                )
+            )
+            fig.add_trace(
+                go.Scatter(
+                    x=single["target_time"],
+                    y=single["predicted_unit"] - single["sigma"],
+                    mode="lines",
+                    line=dict(width=0),
+                    fill="tonexty",
+                    fillcolor="rgba(167,139,250,0.16)",
+                    name="+/- 1 sigma",
+                )
+            )
+
+    fig.add_trace(
+        go.Scatter(
+            x=single["target_time"],
+            y=single["predicted_unit"],
+            mode="lines",
+            line=dict(color="#7c3aed", width=2.5),
+            name="XGBoost forecast",
+        )
+    )
+
+    if show_actuals and single["actual_unit"].notna().any():
+        fig.add_trace(
+            go.Scatter(
+                x=single["target_time"],
+                y=single["actual_unit"],
+                mode="lines",
+                line=dict(color="#16a34a", width=2, dash="dot"),
+                name="Actual in forecast window",
+            )
+        )
+
+    fig.add_vrect(
+        x0=single["target_time"].iloc[0],
+        x1=single["target_time"].iloc[-1],
+        fillcolor="rgba(124,58,237,0.08)",
+        line_width=0,
+        layer="below",
+        annotation_text="5-day forecast",
+        annotation_position="top left",
+    )
+    fig.update_layout(
+        template="plotly_white",
+        height=430,
+        title=f"Historical price context + 5-day XGBoost forecast (issued {issue:%Y-%m-%d %H:%M})",
+        xaxis_title="Time",
+        yaxis_title=label,
+        legend=dict(orientation="h", y=-0.18, x=0.5, xanchor="center"),
+        margin=dict(l=50, r=25, t=70, b=85),
+    )
+    fig.show()
+    return fig
+
+
 def plot_single_forecast_with_uncertainty(
     predictions_path: str | Path = PREDICTIONS_PATH,
     issue_time: str | pd.Timestamp | None = None,
@@ -986,6 +1108,7 @@ __all__ = [
     "make_uncertainty_summary_table",
     "plot_day_ahead_price_history",
     "plot_forecast_model_outputs",
+    "plot_price_history_with_5day_forecast",
     "plot_raw_price_and_weather",
     "plot_residual_diagnostics",
     "plot_single_forecast_with_uncertainty",
