@@ -479,6 +479,7 @@ def _plot_weather_forecast_panel(
                 label="Approx. 95% error band",
             )
         ax.set_title(f"{title} ({cfg['unit']})")
+        ax.set_facecolor("#ffffff")
         ax.grid(alpha=0.25)
         ax.legend(fontsize=8, loc="upper right")
 
@@ -497,15 +498,17 @@ def plot_weather_forecast_grid(
 
     if isinstance(horizon_hours, int):
         sub, start_ts, end_ts = _prepare_weather_forecast_slice(df, horizon_hours, start, days)
-        fig, axes = plt.subplots(2, 2, figsize=(15, 8), sharex=True)
+        fig, axes = plt.subplots(2, 2, figsize=(15, 8.6), sharex=True)
         _plot_weather_forecast_panel(axes, sub, int(horizon_hours))
         fig.suptitle(
             f"Forecast-like weather inputs at h={int(horizon_hours)} "
             f"({start_ts:%Y-%m-%d} to {end_ts:%Y-%m-%d})",
             fontsize=13,
+            y=0.98,
+            bbox={"facecolor": "white", "edgecolor": "none", "pad": 4},
         )
         fig.autofmt_xdate()
-        fig.tight_layout()
+        fig.tight_layout(rect=[0, 0, 1, 0.94])
         plt.show()
         return fig
 
@@ -521,19 +524,25 @@ def plot_weather_forecast_grid(
             days=days,
         )
 
-    fig = plt.figure(figsize=(7.5 * len(horizons), 8.5))
-    subfigs = fig.subfigures(1, len(horizons), wspace=0.04)
+    fig = plt.figure(figsize=(7.8 * len(horizons), 9.4))
+    subfigs = fig.subfigures(1, len(horizons), wspace=0.08)
     if len(horizons) == 2:
         subfigs = list(subfigs)
 
     ranges: list[tuple[pd.Timestamp, pd.Timestamp]] = []
     for subfig, horizon in zip(subfigs, horizons):
+        subfig.patch.set_facecolor("#f3f4f6")
+        subfig.patch.set_edgecolor("#cbd5e1")
+        subfig.patch.set_linewidth(2.0)
         sub, start_ts, end_ts = _prepare_weather_forecast_slice(df, horizon, start, days)
         axes = subfig.subplots(2, 2, sharex=True)
+        subfig.subplots_adjust(left=0.08, right=0.97, bottom=0.09, top=0.87, wspace=0.28, hspace=0.28)
         _plot_weather_forecast_panel(axes, sub, horizon)
         subfig.suptitle(
             f"h={horizon} ({start_ts:%Y-%m-%d} to {end_ts:%Y-%m-%d})",
             fontsize=12,
+            y=0.96,
+            fontweight="semibold",
         )
         subfig.autofmt_xdate()
         ranges.append((start_ts, end_ts))
@@ -543,10 +552,15 @@ def plot_weather_forecast_grid(
     fig.suptitle(
         "Forecast-like weather inputs by horizon "
         f"({overall_start:%Y-%m-%d} to {overall_end:%Y-%m-%d})",
-        fontsize=14,
-        y=0.99,
+        fontsize=15,
+        y=0.995,
+        bbox={
+            "facecolor": "white",
+            "edgecolor": "#e5e7eb",
+            "boxstyle": "round,pad=0.35",
+        },
     )
-    fig.tight_layout()
+    fig.tight_layout(rect=[0, 0, 1, 0.9])
     plt.show()
     return fig
 
@@ -574,7 +588,7 @@ def plot_weather_price_correlation(
     labels = corr.index.str.replace("fcst_", "", regex=False).str.replace("_", " ")
     colors = np.where(corr >= 0, "#dc2626", "#2563eb")
 
-    fig, ax = plt.subplots(figsize=(10, 8))
+    fig, ax = plt.subplots(figsize=(6, 5.2))
     ax.barh(labels, corr.values, color=colors)
     ax.axvline(0, color="#111827", linewidth=1)
     ax.set_title(f"Correlation with future DK1 price ({horizon_text})")
