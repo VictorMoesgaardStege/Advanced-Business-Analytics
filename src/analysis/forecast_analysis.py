@@ -711,6 +711,56 @@ def plot_forecast_model_outputs(
     return fig
 
 
+def plot_forecast_mae_summary(
+    predictions_path: str | Path = PREDICTIONS_PATH,
+    metrics_path: str | Path = METRICS_PATH,
+    unit: str = "dkk_kwh",
+):
+    """Plot walk-forward MAE by fold and MAE by forecast horizon."""
+    preds = load_predictions(predictions_path)
+    metrics = load_metrics(metrics_path)
+    scale, label = _unit_scale(unit)
+    horizon_metrics = _horizon_metrics(preds, unit)
+
+    fig, axes = plt.subplots(1, 2, figsize=(14, 4))
+
+    ax = axes[0]
+    for day in DAY_GROUPS:
+        col = f"day{day}_mae"
+        if col in metrics.columns:
+            ax.plot(
+                metrics["fold_end"],
+                metrics[col] * scale,
+                marker="o",
+                linewidth=1.5,
+                markersize=3,
+                color=COLORS[day],
+                label=f"Day {day}",
+            )
+    ax.set_title("Walk-forward MAE by fold")
+    ax.set_ylabel(label)
+    ax.grid(alpha=0.25)
+    ax.legend(ncol=3, fontsize=8)
+
+    ax = axes[1]
+    ax.plot(
+        horizon_metrics["horizon_h"],
+        horizon_metrics["mae"],
+        color="#2563eb",
+        linewidth=1.6,
+    )
+    for day, (h_lo, h_hi) in DAY_GROUPS.items():
+        ax.axvspan(h_lo - 0.5, h_hi + 0.5, color=COLORS[day], alpha=0.08)
+    ax.set_title("MAE by forecast horizon")
+    ax.set_xlabel("Hours ahead")
+    ax.set_ylabel(label)
+    ax.grid(alpha=0.25)
+
+    fig.tight_layout()
+    plt.show()
+    return fig
+
+
 def compute_residual_uncertainty(
     predictions_path: str | Path = PREDICTIONS_PATH,
     unit: str = "dkk_kwh",
@@ -1107,6 +1157,7 @@ __all__ = [
     "make_forecast_metrics_table",
     "make_uncertainty_summary_table",
     "plot_day_ahead_price_history",
+    "plot_forecast_mae_summary",
     "plot_forecast_model_outputs",
     "plot_price_history_with_5day_forecast",
     "plot_raw_price_and_weather",
