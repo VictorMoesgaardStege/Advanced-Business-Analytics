@@ -115,7 +115,7 @@ def plot_shap_explanations(
 ) -> None:
     """Notebook wrapper for the saved SHAP beeswarm figures."""
     display_xai_artifacts(
-        ("fig10_shap_beeswarm.png"),
+        ("fig10_shap_beeswarm.png",),
         out=out,
         width=width,
     )

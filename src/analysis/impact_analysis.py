@@ -636,7 +636,7 @@ def plot_granular_shift_illustration(
     if "net_shift_mwh" not in plot_df.columns:
         plot_df["net_shift_mwh"] = plot_df["shifted_system_load_mwh"] - plot_df["system_load_mwh"]
 
-    fig, axes = plt.subplots(5, 1, figsize=(16, 18), sharex=True)
+    fig, axes = plt.subplots(4, 1, figsize=(16, 18), sharex=True)
 
     axes[0].plot(
         plot_df["target_time"],
@@ -703,34 +703,10 @@ def plot_granular_shift_illustration(
     axes[3].grid(alpha=0.25)
     axes[3].legend()
 
-    segment_order = list(segment_assumptions.keys())
-    stack_bottom = np.zeros(len(plot_df))
-    for segment in segment_order:
-        shifted_col = f"{segment}_shifted_mwh"
-        if shifted_col not in plot_df.columns:
-            continue
-        axes[4].bar(
-            plot_df["target_time"],
-            plot_df[shifted_col],
-            bottom=stack_bottom,
-            width=0.03,
-            color=segment_colors.get(segment),
-            label=SEGMENT_LABELS.get(segment, segment),
-        )
-        stack_bottom = stack_bottom + plot_df[shifted_col].to_numpy(dtype=float)
-
-    axes[4].plot(
-        plot_df["target_time"],
-        plot_df["household_load_mwh"],
-        color="black",
-        linewidth=1.0,
-        linestyle="--",
-        label="Baseline household total",
-    )
-    axes[4].set_title("Shifted household energy by segment")
-    axes[4].set_ylabel("MWh")
-    axes[4].grid(alpha=0.25)
-    axes[4].legend(ncol=3, fontsize=9)
+    axes[3].set_title("Shifted household energy by segment")
+    axes[3].set_ylabel("MWh")
+    axes[3].grid(alpha=0.25)
+    axes[3].legend(ncol=3, fontsize=9)
 
     plt.xticks(rotation=30)
     plt.tight_layout()
