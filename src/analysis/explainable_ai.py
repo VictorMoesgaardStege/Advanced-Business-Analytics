@@ -14,7 +14,8 @@ Quick start (notebook)
     from src.analysis.explainable_ai import (
         plot_feature_importance,
         plot_lime, plot_shap, export_shap_for_dashboard,
-        make_dashboard_shap_summary,
+        make_dashboard_shap_summary, summarize_shap_quantile_direction,
+        explain_lime_for_instance,
         display_xai_artifacts,
     )
     from src.models.XG_Boost_full_Res import OUTPUT_DIR, prepare_dataset
@@ -33,10 +34,8 @@ Run (CLI, saves all PNGs):
 import sys
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
 import joblib
 from pathlib import Path
-from lime import lime_tabular
 
 ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(ROOT))
@@ -47,6 +46,228 @@ from src.models.XG_Boost_full_Res import (
 )
 
 EUR_DKK = 7.46  # model outputs EUR/MWh; multiply for DKK/MWh
+
+
+FEATURE_LABELS = {
+    "horizon_h": "Forecast horizon",
+    "hour_of_day": "Hour of day",
+    "day_of_week": "Day of week",
+    "month": "Month",
+    "is_weekend": "Weekend flag",
+    "sin_hour": "Hour cycle sine",
+    "cos_hour": "Hour cycle cosine",
+    "sin_doy": "Day-of-year cycle sine",
+    "cos_doy": "Day-of-year cycle cosine",
+    "fcst_wind_speed_10m": "Forecast wind speed 10m",
+    "fcst_wind_dir_10m_sin": "Forecast wind direction 10m sine",
+    "fcst_wind_dir_10m_cos": "Forecast wind direction 10m cosine",
+    "fcst_wind_speed_100m": "Forecast wind speed 100m",
+    "fcst_wind_dir_100m_sin": "Forecast wind direction 100m sine",
+    "fcst_wind_dir_100m_cos": "Forecast wind direction 100m cosine",
+    "fcst_shortwave_radiation": "Forecast solar radiation",
+    "fcst_cloud_cover": "Forecast cloud cover",
+    "fcst_temperature_2m": "Forecast temperature",
+    "fcst_pressure_msl": "Forecast pressure",
+    "price_lag_24h": "Price 24h ago",
+    "price_lag_48h": "Price 48h ago",
+    "price_lag_168h": "Price 168h ago",
+    "price_rolling_24h_mean": "Recent 24h price average",
+}
+
+
+def feature_display_name(name: str) -> str:
+    """Human-readable feature names for plots, notebooks, and LLM diagnostics."""
+    return FEATURE_LABELS.get(
+        name,
+        name.replace("fcst_", "forecast_").replace("_", " ").title(),
+    )
+
+
+def _price_pressure(value: float, neutral_band: float = 0.0005) -> str:
+    if pd.isna(value) or abs(value) < neutral_band:
+        return "near-neutral"
+    return "raises predicted prices" if value > 0 else "lowers predicted prices"
+
+
+def summarize_shap_quantile_direction(
+    shap_values: pd.DataFrame,
+    feature_values: pd.DataFrame,
+    top_n: int = 8,
+    eur_dkk: float = EUR_DKK,
+    quantile: float = 0.25,
+) -> pd.DataFrame:
+    """Summarise SHAP direction by comparing low and high feature-value quantiles.
+
+    This avoids the misleading "mean signed SHAP" shortcut. For each globally
+    important feature, it asks whether low feature values and high feature values
+    tend to push predictions upward or downward.
+    """
+    if shap_values.empty or feature_values.empty:
+        return pd.DataFrame()
+
+    common = [c for c in shap_values.columns if c in feature_values.columns]
+    if not common:
+        return pd.DataFrame()
+
+    top_features = (
+        shap_values[common]
+        .abs()
+        .mean()
+        .sort_values(ascending=False)
+        .head(top_n)
+        .index
+    )
+
+    rows = []
+    for feature in top_features:
+        sv = pd.to_numeric(shap_values[feature], errors="coerce") * eur_dkk / 1000
+        fv = pd.to_numeric(feature_values[feature], errors="coerce")
+        valid = sv.notna() & fv.notna()
+        if valid.sum() < 20:
+            continue
+
+        sv = sv[valid]
+        fv = fv[valid]
+        low_cut = fv.quantile(quantile)
+        high_cut = fv.quantile(1 - quantile)
+        low_sv = sv[fv <= low_cut]
+        high_sv = sv[fv >= high_cut]
+        if low_sv.empty or high_sv.empty:
+            continue
+
+        low_effect = float(low_sv.mean())
+        high_effect = float(high_sv.mean())
+        mean_abs = float(sv.abs().mean())
+        directional_gap = abs(high_effect - low_effect)
+        direction_summary = (
+            "mixed directional pattern"
+            if directional_gap < max(0.0005, mean_abs * 0.10)
+            else (
+                "low values push prices higher than high values"
+                if low_effect > high_effect
+                else "high values push prices higher than low values"
+            )
+        )
+
+        rows.append(
+            {
+                "feature": feature,
+                "display_feature": feature_display_name(feature),
+                "mean_abs_shap_dkk_kwh": mean_abs,
+                "low_feature_value_q": float(low_cut),
+                "high_feature_value_q": float(high_cut),
+                "low_value_mean_shap_dkk_kwh": low_effect,
+                "high_value_mean_shap_dkk_kwh": high_effect,
+                "low_value_pressure": _price_pressure(low_effect),
+                "high_value_pressure": _price_pressure(high_effect),
+                "direction_summary": direction_summary,
+            }
+        )
+
+    return pd.DataFrame(rows)
+
+
+def _day_for_horizon(horizon_h: int) -> int:
+    for day, (h_lo, h_hi) in DAY_GROUPS.items():
+        if h_lo <= int(horizon_h) <= h_hi:
+            return day
+    raise ValueError(f"horizon_h={horizon_h} is outside configured day groups")
+
+
+def _format_lime_rule(rule: str) -> str:
+    formatted = rule
+    for feature in sorted(FEATURES, key=len, reverse=True):
+        formatted = formatted.replace(feature, feature_display_name(feature))
+    return formatted
+
+
+def explain_lime_for_instance(
+    final_models: dict,
+    df: pd.DataFrame,
+    issue_time: str | pd.Timestamp,
+    horizon_h: int,
+    top_n: int = 6,
+    eur_dkk: float = EUR_DKK,
+    sample_n: int = 5000,
+    num_samples: int = 2000,
+    random_state: int = 42,
+) -> pd.DataFrame:
+    """Return compact local LIME contributions for one forecast issue/horizon.
+
+    The dashboard uses this only for representative hours inside selected
+    cheapest/most-expensive windows, not for every forecast hour.
+    """
+    if df.empty:
+        return pd.DataFrame()
+
+    horizon_h = int(horizon_h)
+    day = _day_for_horizon(horizon_h)
+    model = final_models.get(day)
+    if model is None:
+        return pd.DataFrame()
+
+    issue_ts = pd.Timestamp(issue_time)
+    issue_times = pd.to_datetime(df["issue_time"])
+    instance = df[(issue_times == issue_ts) & (df["horizon_h"].astype(int) == horizon_h)]
+    if instance.empty:
+        return pd.DataFrame()
+
+    h_lo, h_hi = DAY_GROUPS[day]
+    train = df[df["horizon_h"].between(h_lo, h_hi)][FEATURES].dropna()
+    if train.empty:
+        return pd.DataFrame()
+    if len(train) > sample_n:
+        train = train.sample(sample_n, random_state=random_state)
+
+    X_instance = instance[FEATURES].dropna().head(1)
+    if X_instance.empty:
+        return pd.DataFrame()
+
+    from lime import lime_tabular
+
+    explainer = lime_tabular.LimeTabularExplainer(
+        training_data=train.values,
+        feature_names=FEATURES,
+        mode="regression",
+        random_state=random_state,
+    )
+
+    def predict_fn(values: np.ndarray) -> np.ndarray:
+        X = pd.DataFrame(values, columns=FEATURES)
+        return model.predict(X)
+
+    exp = explainer.explain_instance(
+        data_row=X_instance.iloc[0].values,
+        predict_fn=predict_fn,
+        num_features=top_n,
+        num_samples=num_samples,
+    )
+
+    pred_eur_mwh = float(model.predict(X_instance)[0])
+    rows = []
+    for rule, contribution in exp.as_list():
+        contribution = float(contribution)
+        rows.append(
+            {
+                "day_model": day,
+                "issue_time": issue_ts,
+                "horizon_h": horizon_h,
+                "target_time": pd.Timestamp(instance["target_time"].iloc[0]),
+                "prediction_eur_mwh": pred_eur_mwh,
+                "prediction_dkk_kwh": pred_eur_mwh * eur_dkk / 1000,
+                "feature_rule": _format_lime_rule(rule),
+                "contribution_eur_mwh": contribution,
+                "contribution_dkk_kwh": contribution * eur_dkk / 1000,
+                "direction": "raises forecast" if contribution >= 0 else "lowers forecast",
+            }
+        )
+
+    result = pd.DataFrame(rows)
+    if not result.empty:
+        result = result.reindex(
+            result["contribution_dkk_kwh"].abs().sort_values(ascending=False).index
+        ).reset_index(drop=True)
+    return result
 
 
 # -- Notebook helpers -----------------------------------------------------------
@@ -70,18 +291,12 @@ def make_dashboard_shap_summary(
     shap_values = pd.read_parquet(shap_path)
     feature_values = pd.read_parquet(feature_path)
 
-    top_features = shap_values.abs().mean().sort_values(ascending=False).head(top_n)
-    summary = pd.DataFrame(
-        {
-            "feature": top_features.index,
-            "mean_abs_shap_dkk_kwh": top_features.values * eur_dkk / 1000,
-            "mean_signed_shap_dkk_kwh": (
-                shap_values[top_features.index].mean().values * eur_dkk / 1000
-            ),
-            "sample_mean_feature_value": feature_values[top_features.index].mean().values,
-        }
+    return summarize_shap_quantile_direction(
+        shap_values=shap_values,
+        feature_values=feature_values,
+        top_n=top_n,
+        eur_dkk=eur_dkk,
     )
-    return summary
 
 
 def display_xai_artifacts(
@@ -143,6 +358,8 @@ def plot_feature_importance(
     final_models : dict {day: XGBRegressor} loaded from final_day_models.joblib
     out          : directory to save fig4_feature_importance.png; None = plt.show()
     """
+    import matplotlib.pyplot as plt
+
     fig, axes = plt.subplots(1, 5, figsize=(22, 5))
     for ax, (day, model), color in zip(axes, final_models.items(), COLORS):
         imp = (
@@ -179,6 +396,9 @@ def plot_lime(
     out          : directory to save fig7_lime.png; None = plt.show()
     issue_time   : which issue time to explain (default: latest in df)
     """
+    import matplotlib.pyplot as plt
+    from lime import lime_tabular
+
     issue_times = pd.to_datetime(df["issue_time"])
     if issue_time is not None:
         issue = pd.Timestamp(issue_time)
@@ -254,6 +474,7 @@ def plot_shap(
     out          : directory to save fig9/fig10 PNGs; None = plt.show()
     sample_n     : number of rows to sample per day model (default: 1500)
     """
+    import matplotlib.pyplot as plt
     import shap
 
     # fig9: mean |SHAP| bar charts
@@ -266,10 +487,9 @@ def plot_shap(
         explainer   = shap.TreeExplainer(model)
         shap_vals   = explainer.shap_values(X_samp) * EUR_DKK
         mean_abs    = np.abs(shap_vals).mean(axis=0)
-        mean_signed = shap_vals.mean(axis=0)
         order       = np.argsort(mean_abs)[-12:]
         feat_labels = [FEATURES[i] for i in order]
-        bar_colors  = [color if mean_signed[i] >= 0 else "#bdbdbd" for i in order]
+        bar_colors  = [color for _ in order]
 
         ax.barh(feat_labels, mean_abs[order], color=bar_colors)
         ax.set_title(f"Day {day} (h{h_lo}-{h_hi})", fontsize=10)
@@ -277,8 +497,8 @@ def plot_shap(
         ax.tick_params(axis="y", labelsize=7)
 
     fig.suptitle(
-        "SHAP feature importance  --  colour = direction of mean effect  "
-        "(solid = increases price / grey = decreases price)",
+        "SHAP feature importance  --  bar length = mean absolute effect; "
+        "use beeswarm plots for direction",
         fontsize=10,
     )
     fig.tight_layout()

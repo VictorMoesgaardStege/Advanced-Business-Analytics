@@ -15,6 +15,7 @@ METRICS_FILE = Path("outputs/model/metrics.csv")
 MODEL_FILE        = Path("outputs/model/final_day_models.joblib")
 SHAP_VALUES_FILE   = Path("outputs/model/shap_day1_values.parquet")
 SHAP_FEATURES_FILE = Path("outputs/model/shap_day1_features.parquet")
+MODEL_DATASET_FILE = DATA_DIR / "model_dataset.parquet"
 WEATHER_FILE       = Path("data/weather_dk1_dashboard.parquet")
 PRICE_AREA  = "DK1"
 EUR_DKK_FB  = 7.46   # fallback exchange rate
@@ -250,9 +251,10 @@ def process_predictions_hourly(
     future = sub[sub["target_time"] > issue_ts].sort_values("target_time").head(120)
     future["pred_dkk"]   = future["predicted"]        * eur_dkk / 1000
     future["actual_dkk"] = future["DayAheadPriceEUR"] * eur_dkk / 1000
+    future["issue_time"] = issue_ts
     future["issue_date"] = issue_ts.normalize()
     future["sigma_dkk"]  = future["horizon_h"].map(bands or {}).fillna(0.0)
-    return future[["target_time", "horizon_h", "pred_dkk", "actual_dkk", "issue_date",
+    return future[["issue_time", "target_time", "horizon_h", "pred_dkk", "actual_dkk", "issue_date",
                    "sigma_dkk"]].reset_index(drop=True)
 
 
@@ -338,19 +340,210 @@ def _build_weather_summary(weather: pd.DataFrame, issue_ts: pd.Timestamp) -> str
     return "\n".join(lines)
 
 
+def _format_model_effect(value: float, neutral_band: float = 0.0005) -> str:
+    if pd.isna(value) or abs(value) < neutral_band:
+        return "near neutral"
+    return f"{'up' if value > 0 else 'down'} ({value:+.4f} DKK/kWh)"
+
+
+def _build_shap_context(
+    shap_vals: pd.DataFrame,
+    shap_feat: pd.DataFrame,
+    eur_dkk: float,
+    top_n: int = 5,
+) -> str:
+    """Compact global SHAP context using low/high feature quantiles, not mean signed SHAP."""
+    if shap_vals.empty or shap_feat.empty:
+        return "Global attribution patterns unavailable."
+    try:
+        from src.analysis.explainable_ai import summarize_shap_quantile_direction
+
+        summary = summarize_shap_quantile_direction(
+            shap_values=shap_vals,
+            feature_values=shap_feat,
+            top_n=top_n,
+            eur_dkk=eur_dkk,
+        )
+    except Exception:
+        return "Global attribution patterns unavailable."
+
+    if summary.empty:
+        return "Global attribution patterns unavailable."
+
+    lines = ["Global attribution patterns from the final Day 1 XGBoost model:"]
+    for _, row in summary.iterrows():
+        lines.append(
+            f"  - {row['display_feature']}: low values push predictions "
+            f"{_format_model_effect(row['low_value_mean_shap_dkk_kwh'])}; "
+            f"high values push predictions "
+            f"{_format_model_effect(row['high_value_mean_shap_dkk_kwh'])}; "
+            f"global strength {row['mean_abs_shap_dkk_kwh']:.4f} DKK/kWh."
+        )
+    return "\n".join(lines)
+
+
+@st.cache_resource(show_spinner=False)
+def load_lime_models() -> dict:
+    """Load all final day models for local LIME diagnostics."""
+    if not MODEL_FILE.exists():
+        return {}
+    try:
+        import joblib
+        obj = joblib.load(MODEL_FILE)
+        return obj if isinstance(obj, dict) else {1: obj}
+    except Exception:
+        return {}
+
+
+@st.cache_data(show_spinner=False)
+def load_lime_dataset() -> pd.DataFrame:
+    """Load model-ready features needed for local LIME explanations."""
+    if not MODEL_DATASET_FILE.exists():
+        return pd.DataFrame()
+    try:
+        from src.models.XG_Boost_full_Res import FEATURES, REGION
+
+        columns = list(dict.fromkeys(["region", "issue_time", "target_time", "horizon_h"] + FEATURES))
+        df = pd.read_parquet(MODEL_DATASET_FILE, columns=columns)
+        df = df[df["region"] == REGION].copy()
+        df["issue_time"] = pd.to_datetime(df["issue_time"])
+        df["target_time"] = pd.to_datetime(df["target_time"])
+        return df.dropna(subset=FEATURES).reset_index(drop=True)
+    except Exception:
+        return pd.DataFrame()
+
+
+def _select_lime_windows(hourly_fcst: pd.DataFrame, window_hours: int = 3) -> list[dict]:
+    """Select one cheap and one expensive rolling window for local attribution."""
+    required = {"issue_time", "target_time", "horizon_h", "pred_dkk"}
+    if hourly_fcst.empty or not required.issubset(hourly_fcst.columns):
+        return []
+
+    df = hourly_fcst.dropna(subset=["pred_dkk"]).sort_values("target_time").reset_index(drop=True)
+    if df.empty:
+        return []
+
+    window_hours = min(window_hours, len(df))
+    df["_window_avg"] = df["pred_dkk"].rolling(window_hours, min_periods=window_hours).mean()
+    valid = df.dropna(subset=["_window_avg"])
+    if valid.empty:
+        return []
+
+    windows = []
+    for label, idx in [
+        ("Cheapest selected window", int(valid["_window_avg"].idxmin())),
+        ("Most expensive selected window", int(valid["_window_avg"].idxmax())),
+    ]:
+        start_i = max(0, idx - window_hours + 1)
+        end_i = idx
+        mid_i = start_i + (end_i - start_i) // 2
+        start_ts = pd.Timestamp(df.loc[start_i, "target_time"])
+        end_ts = pd.Timestamp(df.loc[end_i, "target_time"]) + pd.Timedelta(hours=1)
+        windows.append(
+            {
+                "label": label,
+                "start_time": start_ts,
+                "end_time": end_ts,
+                "avg_pred_dkk": float(df.loc[start_i:end_i, "pred_dkk"].mean()),
+                "issue_time": pd.Timestamp(df.loc[mid_i, "issue_time"]),
+                "horizon_h": int(df.loc[mid_i, "horizon_h"]),
+            }
+        )
+    return windows
+
+
+def _format_window_time(start_ts: pd.Timestamp, end_ts: pd.Timestamp) -> str:
+    end_day = end_ts - pd.Timedelta(minutes=1)
+    if start_ts.normalize() == end_day.normalize():
+        return f"{start_ts.strftime('%a %d %b %H:%M')}-{end_ts.strftime('%H:%M')}"
+    return f"{start_ts.strftime('%a %d %b %H:%M')}-{end_ts.strftime('%a %d %b %H:%M')}"
+
+
+def _build_lime_window_context(hourly_fcst: pd.DataFrame, eur_dkk: float) -> str:
+    """Compact local LIME context for only the selected cheap and expensive windows."""
+    windows = _select_lime_windows(hourly_fcst)
+    if not windows:
+        return "Local window attribution unavailable."
+
+    models = load_lime_models()
+    lime_df = load_lime_dataset()
+    if not models or lime_df.empty:
+        return "Local window attribution unavailable."
+
+    try:
+        from src.analysis.explainable_ai import explain_lime_for_instance
+    except Exception:
+        return "Local window attribution unavailable."
+
+    lines = ["Local attribution for representative hours inside selected 3-hour windows:"]
+    for window in windows:
+        try:
+            exp = explain_lime_for_instance(
+                final_models=models,
+                df=lime_df,
+                issue_time=window["issue_time"],
+                horizon_h=window["horizon_h"],
+                top_n=6,
+                eur_dkk=eur_dkk,
+            )
+        except Exception:
+            exp = pd.DataFrame()
+        if exp.empty:
+            continue
+
+        factors = []
+        for _, row in exp.head(4).iterrows():
+            value = float(row["contribution_dkk_kwh"])
+            direction = "up" if value >= 0 else "down"
+            factors.append(f"{row['feature_rule']} ({direction} {abs(value):.4f} DKK/kWh)")
+
+        lines.append(
+            f"  - {window['label']} {_format_window_time(window['start_time'], window['end_time'])}, "
+            f"avg {window['avg_pred_dkk']:.3f} DKK/kWh: "
+            f"{'; '.join(factors)}."
+        )
+
+    return "\n".join(lines) if len(lines) > 1 else "Local window attribution unavailable."
+
+
+def _build_model_diagnostics_context(
+    shap_vals: pd.DataFrame,
+    shap_feat: pd.DataFrame,
+    hourly_fcst: pd.DataFrame,
+    eur_dkk: float,
+) -> str:
+    shap_context = _build_shap_context(shap_vals, shap_feat, eur_dkk)
+    lime_context = _build_lime_window_context(hourly_fcst, eur_dkk)
+
+    return f"""MODEL DIAGNOSTICS:
+Use these only as secondary evidence about what the XGBoost model has learned.
+Do not treat them as causal truth. Do not mention SHAP or LIME by name unless necessary.
+Prefer the actual forecast, price pattern, and weather data when they conflict.
+
+{shap_context}
+
+{lime_context}"""
+
+
 def prompt_reasoning(
     fcst: pd.DataFrame,
     today_avg: float,
     issue_date: pd.Timestamp,
     hourly_fcst: pd.DataFrame,
     weather: pd.DataFrame,
+    model_diagnostics: str = "",
 ) -> str:
     daily_rows = "\n".join(
         f"  {r.Date.strftime('%a %d %b')}: {r.pred_dkk:.3f} DKK/kWh  ({r.pred_dkk - today_avg:+.3f} vs today)"
         for _, r in fcst.iterrows()
     )
     intraday    = _build_hourly_day_summary(hourly_fcst)
-    weather_str = _build_weather_summary(weather, issue_date)
+    issue_ts = (
+        pd.Timestamp(hourly_fcst["issue_time"].iloc[0])
+        if not hourly_fcst.empty and "issue_time" in hourly_fcst.columns
+        else issue_date
+    )
+    weather_str = _build_weather_summary(weather, issue_ts)
 
     return f"""You are a Nordic electricity market analyst. Be direct and concise.
 
@@ -362,6 +555,8 @@ PRICES (daily avg, peak, cheapest):
 WEATHER FORECAST (avg per day):
 {weather_str}
 
+{model_diagnostics}
+
 Write EXACTLY 4 bullet points (•), each 50–70 words. Each bullet covers one key price driver across the 5-day window.
 
 Write like a Nordic energy market analyst giving a verbal briefing — analytical, not descriptive. Do NOT list weather numbers sentence by sentence. Instead, use weather and price data as evidence to support a broader market argument, for example:
@@ -370,6 +565,7 @@ Write like a Nordic energy market analyst giving a verbal briefing — analytica
 
 Rules:
 - Reference specific numbers only where they make the argument stronger, not in every sentence.
+- Treat model diagnostics as quiet supporting evidence only; do not make them the main explanation.
 - Do NOT use "may", "could", "might", or "perhaps".
 - No preamble. No closing sentence. Only the 4 bullets."""
 
@@ -406,14 +602,22 @@ def prompt_household(
     fcst: pd.DataFrame,
     today_avg: float,
     hourly_fcst: pd.DataFrame,
+    weather: pd.DataFrame,
+    model_diagnostics: str = "",
 ) -> str:
     daily_rows = "\n".join(
         f"  {r.Date.strftime('%A %d %b')}: {r.pred_dkk:.3f} DKK/kWh avg  "
-        f"({'↑ expensive' if r.pred_dkk - today_avg > 50 else '↓ cheap' if r.pred_dkk - today_avg < -50 else '→ similar to today'})"
+        f"({'↑ expensive' if r.pred_dkk - today_avg > 0.025 else '↓ cheap' if r.pred_dkk - today_avg < -0.025 else '→ similar to today'})"
         for _, r in fcst.iterrows()
     )
     intraday     = _build_hourly_day_summary(hourly_fcst)
     cheap_windows = _build_cheap_windows(hourly_fcst)
+    issue_ts = (
+        pd.Timestamp(hourly_fcst["issue_time"].iloc[0])
+        if not hourly_fcst.empty and "issue_time" in hourly_fcst.columns
+        else fcst["issue_date"].iloc[0]
+    )
+    weather_str = _build_weather_summary(weather, issue_ts)
 
     return f"""You are a friendly energy advisor helping a Danish household reduce their electricity bill.
 
@@ -425,8 +629,13 @@ DAILY OUTLOOK:
 CHEAPEST PERIODS to shift load to:
 {cheap_windows}
 
+WEATHER FORECAST (avg per day):
+{weather_str}
+
 INTRADAY DETAIL:
 {intraday}
+
+{model_diagnostics}
 
 Write 5 bullet points (•), each 2–3 sentences, 40–55 words.
 
@@ -435,6 +644,7 @@ Style guide:
 - Use natural time language: "overnight", "early morning", "during the night" — not "between 03:00 and 04:00".
 - Be direct and practical but conversational, not robotic.
 - Explain briefly WHY that window is cheap (e.g. low overnight demand, high wind, etc.).
+- Use model diagnostics only as secondary support for why a cheap or expensive window appears; do not mention SHAP or LIME by name.
 - Cover across the 5 bullets: EV charging, washing/dishwasher, heat pump, hot water, and one other flexible load.
 - No preamble. No closing sentence."""
 
@@ -1151,8 +1361,20 @@ def main() -> None:
                 st.info("Forecast data required.")
             else:
                 if st.button("Generate forecast reasoning", key="btn_r", type="primary"):
-                    with st.spinner("Asking Groq…"):
-                        text = groq_call(prompt_reasoning(fcst, today_avg, fcst["issue_date"].iloc[0], hourly_fcst, weather))
+                    with st.spinner("Building model diagnostics and asking Groq…"):
+                        model_diagnostics = _build_model_diagnostics_context(
+                            shap_vals, shap_feat, hourly_fcst, eur_dkk
+                        )
+                        text = groq_call(
+                            prompt_reasoning(
+                                fcst,
+                                today_avg,
+                                fcst["issue_date"].iloc[0],
+                                hourly_fcst,
+                                weather,
+                                model_diagnostics,
+                            )
+                        )
                         st.session_state["_r"] = text
 
                 if "_r" in st.session_state:
@@ -1177,8 +1399,11 @@ def main() -> None:
                 st.info("Forecast data required.")
             else:
                 if st.button("Generate household tips", key="btn_h", type="primary"):
-                    with st.spinner("Asking Groq…"):
-                        text = groq_call(prompt_household(fcst, today_avg, hourly_fcst))
+                    with st.spinner("Building model diagnostics and asking Groq…"):
+                        model_diagnostics = _build_model_diagnostics_context(
+                            shap_vals, shap_feat, hourly_fcst, eur_dkk
+                        )
+                        text = groq_call(prompt_household(fcst, today_avg, hourly_fcst, weather, model_diagnostics))
                         st.session_state["_h"] = text
 
                 if "_h" in st.session_state:
